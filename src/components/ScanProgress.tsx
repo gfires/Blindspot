@@ -71,17 +71,24 @@ function useElapsed(running: boolean, resetKey: string): number {
   return elapsed;
 }
 
-export function ScanProgress({ state }: { state: ScanState }) {
+/**
+ * @param state  the reduced scan state
+ * @param done   true when rendered as a static, post-scan record (inside the report). Suppresses
+ *               the live-only affordances (the MRI sweep animation) but keeps the full search
+ *               path, scrape statuses, timings, and prompt so the user can inspect the path after
+ *               analysis completes. The elapsed clock freezes on its own (state.running is false).
+ */
+export function ScanProgress({ state, done = false }: { state: ScanState; done?: boolean }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const currentIdx = PHASE_ORDER.indexOf(state.phase);
 
-  // Live, ticking elapsed time for the whole scan (reset per industry).
+  // Live, ticking elapsed time for the whole scan (reset per industry). Frozen once done.
   const elapsed = useElapsed(state.running, state.industry);
 
-  // Keep the activity feed pinned to the newest line.
+  // Keep the activity feed pinned to the newest line (only while it's actively growing).
   useEffect(() => {
-    feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
-  }, [state.trace.length]);
+    if (!done) feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
+  }, [state.trace.length, done]);
 
   const scrapedOk = state.sources.filter((s) => s.scrape === "ok").length;
   const skipped = state.sources.filter((s) => s.scrape === "skipped").length;
@@ -90,10 +97,12 @@ export function ScanProgress({ state }: { state: ScanState }) {
 
   return (
     <div className="relative mx-auto w-full max-w-4xl overflow-hidden">
-      {/* Sweeping MRI scan line across the whole panel. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-full">
-        <div className="h-16 w-full animate-sweep bg-gradient-to-b from-transparent via-accent/10 to-transparent" />
-      </div>
+      {/* Sweeping MRI scan line — live only; a finished trace is static. */}
+      {!done && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-full">
+          <div className="h-16 w-full animate-sweep bg-gradient-to-b from-transparent via-accent/10 to-transparent" />
+        </div>
+      )}
 
       {/* Phase rail */}
       <div className="mb-5 flex items-center gap-2">

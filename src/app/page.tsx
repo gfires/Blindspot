@@ -37,8 +37,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Report */}
-      {showReport && <ReportView report={state.report!} prompt={state.prompt} onReset={reset} />}
+      {/* Report — includes the finished exploration trace so the search/scrape path stays inspectable. */}
+      {showReport && <ReportView report={state.report!} scan={state} onReset={reset} />}
 
       {/* Error */}
       {showError && (

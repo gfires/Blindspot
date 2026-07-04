@@ -3,21 +3,23 @@
  * spec's order), playful stats, and a full source appendix. Every claim carries citations.
  */
 import type { ScanReport } from "@/lib/schema";
-import type { PromptTrace } from "@/lib/useScanStream";
+import type { ScanState } from "@/lib/useScanStream";
 import { SCORE_DEFINITIONS } from "@/lib/analyze";
 import { OpportunityMeter } from "./OpportunityMeter";
 import { Gauge } from "./Gauge";
 import { ReportSection, EvidenceList } from "./ReportSection";
 import { PlayfulStats } from "./PlayfulStats";
 import { Citations } from "./SourceChip";
+import { ScanProgress } from "./ScanProgress";
 
 export function ReportView({
   report,
-  prompt,
+  scan,
   onReset,
 }: {
   report: ScanReport;
-  prompt: PromptTrace | null;
+  /** The full finished scan state — carries the exploration trace (search path, scrape, timing). */
+  scan: ScanState;
   onReset: () => void;
 }) {
   const { sources } = report;
@@ -152,27 +154,23 @@ export function ReportView({
       </details>
 
       {/* The exact prompt that produced this report — collapsed, for full transparency. */}
-      {prompt && (
-        <details className="panel p-4">
-          <summary className="cursor-pointer font-mono text-xs uppercase tracking-widest text-fg/70">
-            Prompt sent to {prompt.model} <span className="normal-case tracking-normal text-mute">(exact)</span>
-          </summary>
-          <div className="mt-3 space-y-3">
-            <div>
-              <div className="eyebrow mb-1">System</div>
-              <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded border border-line bg-ink p-2 font-mono text-[11px] leading-relaxed text-fg/80">
-                {prompt.systemPrompt}
-              </pre>
-            </div>
-            <div>
-              <div className="eyebrow mb-1">User</div>
-              <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded border border-line bg-ink p-2 font-mono text-[11px] leading-relaxed text-fg/80">
-                {prompt.userPrompt}
-              </pre>
-            </div>
-          </div>
-        </details>
-      )}
+      {/*
+        Exploration trace — the full search/scrape path preserved after analysis. Collapsible so
+        the report stays clean, but the user can reopen exactly what was searched, which sources
+        were read/skipped/blocked, the per-step latencies, and the exact prompt. `done` renders it
+        statically (no sweep animation; clock frozen).
+      */}
+      <details className="panel p-4">
+        <summary className="cursor-pointer font-mono text-xs uppercase tracking-widest text-fg/70">
+          Exploration trace
+          <span className="ml-2 normal-case tracking-normal text-mute">
+            {scan.sources.length} sources · {scan.timing.totalMs != null ? `${(scan.timing.totalMs / 1000).toFixed(1)}s` : ""} · search path, scrape &amp; prompt
+          </span>
+        </summary>
+        <div className="mt-4">
+          <ScanProgress state={scan} done />
+        </div>
+      </details>
 
       <div className="flex justify-center pb-8 pt-2">
         <button

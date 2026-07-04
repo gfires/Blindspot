@@ -13,6 +13,10 @@
       "reason": "seed: auth-wall / bot-block",
       "addedAt": "seed"
     },
+    "nytimes.com": {
+      "reason": "auto: hard-block (403) scraping https://www.nytimes.com/2021/09/04/opinion/labor-shortage-biden-covid.html",
+      "addedAt": "2026-07-04T21:50:41.224Z"
+    },
     "reddit.com": {
       "reason": "seed: 403 bot-wall (\"we do not support this site\")",
       "addedAt": "seed"

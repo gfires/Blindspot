@@ -15,8 +15,9 @@
  */
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ScanState } from "@/lib/useScanStream";
+import { fmtMs } from "@/lib/format";
 
 const PHASES: { key: string; label: string }[] = [
   { key: "intents", label: "Intents" },
@@ -28,22 +29,54 @@ const PHASES: { key: string; label: string }[] = [
 /** Order phases so "past" ones read as complete in the rail. */
 const PHASE_ORDER = ["idle", "intents", "search", "scrape", "analyze", "done"];
 
-function scrapeGlyph(scrape: string): { char: string; cls: string } {
+/** Glyph + label for each scrape state. Distinguishes blocked/skipped/empty so the path is legible. */
+function scrapeGlyph(scrape: string): { char: string; cls: string; label: string } {
   switch (scrape) {
     case "scraping":
-      return { char: "◐", cls: "text-amber animate-blink" };
+      return { char: "◐", cls: "text-amber animate-blink", label: "reading" };
     case "ok":
-      return { char: "●", cls: "text-accent" };
-    case "failed":
-      return { char: "○", cls: "text-mute" };
+      return { char: "●", cls: "text-accent", label: "read" };
+    case "blocked":
+      return { char: "⛔", cls: "text-danger", label: "blocked" };
+    case "skipped":
+      return { char: "⃠", cls: "text-mute/60", label: "skipped (known blocker)" };
+    case "empty":
+      return { char: "○", cls: "text-mute", label: "no content" };
     default:
-      return { char: "·", cls: "text-mute" }; // queued
+      return { char: "·", cls: "text-mute", label: "queued" }; // queued
   }
+}
+
+/**
+ * useElapsed — a live wall-clock timer (ms) that ticks ~10×/sec while `running`, then freezes.
+ * Drives the real-time "counting up" latency in the header/phase rail so the user watches the
+ * scan progress live, not just final numbers. Resets whenever `resetKey` changes (new scan).
+ */
+function useElapsed(running: boolean, resetKey: string): number {
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef<number>(0);
+
+  useEffect(() => {
+    // New scan → restart the clock.
+    startRef.current = Date.now();
+    setElapsed(0);
+  }, [resetKey]);
+
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setElapsed(Date.now() - startRef.current), 100);
+    return () => clearInterval(id);
+  }, [running]);
+
+  return elapsed;
 }
 
 export function ScanProgress({ state }: { state: ScanState }) {
   const feedRef = useRef<HTMLDivElement>(null);
   const currentIdx = PHASE_ORDER.indexOf(state.phase);
+
+  // Live, ticking elapsed time for the whole scan (reset per industry).
+  const elapsed = useElapsed(state.running, state.industry);
 
   // Keep the activity feed pinned to the newest line.
   useEffect(() => {
@@ -51,7 +84,9 @@ export function ScanProgress({ state }: { state: ScanState }) {
   }, [state.trace.length]);
 
   const scrapedOk = state.sources.filter((s) => s.scrape === "ok").length;
-  const scrapedDone = state.sources.filter((s) => s.scrape === "ok" || s.scrape === "failed").length;
+  const skipped = state.sources.filter((s) => s.scrape === "skipped").length;
+  const blocked = state.sources.filter((s) => s.scrape === "blocked").length;
+  const settled = state.sources.filter((s) => ["ok", "blocked", "skipped", "empty"].includes(s.scrape)).length;
 
   return (
     <div className="relative mx-auto w-full max-w-4xl overflow-hidden">
@@ -81,14 +116,39 @@ export function ScanProgress({ state }: { state: ScanState }) {
         })}
       </div>
 
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex items-baseline justify-between gap-3">
         <div className="font-mono text-sm text-fg">
           Scanning <span className="text-accent">{state.industry}</span>
+          {/* Live, ticking wall-clock — the scan literally counts up in front of the user. */}
+          <span className="nums ml-3 text-mute">
+            {fmtMs(elapsed)}
+            {state.running && <span className="ml-0.5 animate-blink text-accent">▊</span>}
+          </span>
         </div>
-        <div className="nums text-xs text-mute">
-          {scrapedDone > 0 && `${scrapedOk}/${state.sources.length} sources read`}
+        <div className="nums flex flex-wrap items-baseline justify-end gap-x-3 gap-y-0.5 text-xs text-mute">
+          {/* Per-phase latency — finalized numbers appear as each phase completes. */}
+          {state.timing.searchMs != null && <span>search {fmtMs(state.timing.searchMs)}</span>}
+          {state.timing.scrapeMs != null && <span>scrape {fmtMs(state.timing.scrapeMs)}</span>}
+          {settled > 0 && (
+            <span>
+              <span className="text-accent">{scrapedOk}</span> read
+              {blocked > 0 && <span className="text-danger"> · {blocked} blocked</span>}
+              {skipped > 0 && <span> · {skipped} skipped</span>}
+              {" "}/ {state.sources.length}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Live scrape progress bar — fills as sources settle, so crawl progress is visible at a glance. */}
+      {state.sources.length > 0 && (
+        <div className="mb-3 h-1 w-full overflow-hidden rounded-full bg-panel2">
+          <div
+            className="h-full rounded-full bg-accent transition-all duration-300"
+            style={{ width: `${Math.round((settled / state.sources.length) * 100)}%` }}
+          />
+        </div>
+      )}
 
       <div className="grid gap-3 md:grid-cols-2">
         {/* Intents grid */}
@@ -114,7 +174,11 @@ export function ScanProgress({ state }: { state: ScanState }) {
                       {intent.label}
                     </span>
                   </span>
-                  {intent.status === "done" && <span className="nums text-xs text-mute">{intent.count}</span>}
+                  {intent.status === "done" && (
+                    <span className="nums shrink-0 text-xs text-mute">
+                      {intent.count} · <span className="text-mute/70">{fmtMs(intent.ms)}</span>
+                    </span>
+                  )}
                 </div>
                 {/* The EXACT query string sent to Firecrawl — full transparency. */}
                 <div className="ml-6 truncate text-[11px] text-mute/70" title={intent.query}>
@@ -136,14 +200,22 @@ export function ScanProgress({ state }: { state: ScanState }) {
             <ul className="max-h-56 space-y-1 overflow-y-auto pr-1">
               {state.sources.map((s) => {
                 const g = scrapeGlyph(s.scrape);
+                const dim = s.scrape === "skipped" || s.scrape === "blocked" || s.scrape === "empty";
                 return (
-                  <li key={s.id} className="flex items-center gap-2 font-mono text-[12px]">
+                  <li key={s.id} className="flex items-center gap-2 font-mono text-[12px]" title={g.label}>
                     <span className={g.cls}>{g.char}</span>
                     <span className="nums w-6 shrink-0 text-mute">[{s.id}]</span>
-                    <span className="flex-1 truncate text-fg/80" title={s.title}>
+                    <span className={`flex-1 truncate ${dim ? "text-mute line-through/0" : "text-fg/80"}`} title={s.title}>
                       {s.domain}
                     </span>
-                    <span className="shrink-0 text-[10px] text-mute">{s.intent}</span>
+                    {/* Per-source latency once settled; the intent tag otherwise. */}
+                    {s.scrape === "ok" ? (
+                      <span className="nums shrink-0 text-[10px] text-mute/70">{fmtMs(s.ms)}</span>
+                    ) : dim ? (
+                      <span className="shrink-0 text-[10px] text-mute/70">{g.label}</span>
+                    ) : (
+                      <span className="shrink-0 text-[10px] text-mute">{s.intent}</span>
+                    )}
                   </li>
                 );
               })}

@@ -30,3 +30,9 @@ export function truncate(text: string, max: number): string {
 export function titleCase(s: string): string {
   return s.replace(/\b\w/g, (c) => c.toUpperCase());
 }
+
+/** Format a millisecond duration compactly: 420 -> "420ms", 5300 -> "5.3s". */
+export function fmtMs(ms: number): string {
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}

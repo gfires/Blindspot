@@ -25,24 +25,45 @@ export type ScanEvent =
   | { type: "intents"; intents: { label: string; query: string }[] }
   /** A single intent's search has begun. */
   | { type: "search:begin"; intent: string }
-  /** A single intent's search returned N results. */
-  | { type: "search:done"; intent: string; count: number }
+  /** A single intent's search returned N results. `ms` is the search latency for that intent. */
+  | { type: "search:done"; intent: string; count: number; ms: number }
   /**
-   * The deduped, ranked set of sources chosen for scraping. Sent after all searches
-   * finish so the UI can render the full source list before scraping ticks through it.
+   * The deduped, ranked set of sources chosen for scraping. Sent after all searches finish so
+   * the UI can render the full source list before scraping ticks through it. Each source carries
+   * `blocked` (true = on the known-blocker list, so it will be SKIPPED, not scraped) — see
+   * lib/blocklist.ts. `searchMs` is the total wall-clock of the search phase.
    */
-  | { type: "sources"; sources: { id: number; url: string; domain: string; title: string; intent: string }[] }
+  | {
+      type: "sources";
+      searchMs: number;
+      sources: { id: number; url: string; domain: string; title: string; intent: string; blocked: boolean }[];
+    }
   /** A page scrape has started (id maps to the `sources` list above). */
   | { type: "scrape:begin"; id: number; domain: string }
-  /** A page scrape finished. `ok` false means it timed out / errored (soft failure). */
-  | { type: "scrape:done"; id: number; domain: string; ok: boolean; chars: number }
+  /**
+   * A page scrape resolved. `ms` is that page's scrape latency.
+   *   status "ok"      — content retrieved.
+   *   status "blocked" — hard-block (401/403/429/451); the domain was just added to the
+   *                      running blocklist so future scans skip it proactively.
+   *   status "skipped" — we did NOT attempt it because the domain was already blocklisted.
+   *   status "empty"   — transient failure (timeout/404/5xx/network); not blocklisted.
+   */
+  | {
+      type: "scrape:done";
+      id: number;
+      domain: string;
+      status: "ok" | "blocked" | "skipped" | "empty";
+      chars: number;
+      ms: number;
+    }
   /**
    * The LLM inference step has begun. Carries the EXACT prompt being sent (system + user)
-   * and the model name, so the UI can show the full prompt — nothing hidden.
+   * and the model name, so the UI can show the full prompt — nothing hidden. `scrapeMs` is the
+   * total wall-clock of the scrape phase.
    */
-  | { type: "analyze:begin"; model: string; systemPrompt: string; userPrompt: string }
-  /** Terminal success: the complete report. */
-  | { type: "report"; report: ScanReport }
+  | { type: "analyze:begin"; model: string; systemPrompt: string; userPrompt: string; scrapeMs: number }
+  /** Terminal success: the complete report. `totalMs`/`analyzeMs` document end-to-end timing. */
+  | { type: "report"; report: ScanReport; analyzeMs: number; totalMs: number }
   /** Terminal failure with a human-readable message. */
   | { type: "error"; message: string };
 

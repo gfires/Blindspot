@@ -1,0 +1,45 @@
+{
+  "_comment": "Running list of domains that block scraping (bot-walls, auth-walls, rate limits). Read BEFORE scraping to skip them proactively, and appended to automatically whenever a domain returns a hard-block failure (HTTP 401/403/429/451) during a scan. This is the app's only persistent state. Managed by src/lib/blocklist.ts — edit through there, or hand-edit `domains` (keep it sorted, lowercase, bare hostnames without www.). Entries note when/why a domain was added.",
+  "domains": {
+    "facebook.com": {
+      "reason": "seed: login-wall",
+      "addedAt": "seed"
+    },
+    "instagram.com": {
+      "reason": "seed: login-wall",
+      "addedAt": "seed"
+    },
+    "linkedin.com": {
+      "reason": "seed: auth-wall / bot-block",
+      "addedAt": "seed"
+    },
+    "reddit.com": {
+      "reason": "seed: 403 bot-wall (\"we do not support this site\")",
+      "addedAt": "seed"
+    },
+    "twitter.com": {
+      "reason": "seed: auth-wall / bot-block",
+      "addedAt": "seed"
+    },
+    "www.facebook.com": {
+      "reason": "seed: login-wall",
+      "addedAt": "seed"
+    },
+    "www.instagram.com": {
+      "reason": "seed: login-wall",
+      "addedAt": "seed"
+    },
+    "www.linkedin.com": {
+      "reason": "seed: auth-wall / bot-block",
+      "addedAt": "seed"
+    },
+    "www.reddit.com": {
+      "reason": "seed: 403 bot-wall",
+      "addedAt": "seed"
+    },
+    "x.com": {
+      "reason": "seed: auth-wall / bot-block",
+      "addedAt": "seed"
+    }
+  }
+}

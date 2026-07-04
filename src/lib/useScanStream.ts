@@ -14,6 +14,7 @@ import { useCallback, useRef, useState } from "react";
 import type { ScanEvent, ScanPhase } from "./events";
 import { phaseFor } from "./events";
 import type { ScanReport } from "./schema";
+import { fmtMs } from "./format";
 
 /** Live status of a single search intent, including the exact query sent to Firecrawl. */
 export interface IntentStatus {
@@ -21,6 +22,7 @@ export interface IntentStatus {
   query: string;
   status: "pending" | "searching" | "done";
   count: number;
+  ms: number; // search latency for this intent (0 until done)
 }
 
 /** The exact prompt sent to the model, surfaced for full transparency. */
@@ -30,15 +32,34 @@ export interface PromptTrace {
   userPrompt: string;
 }
 
-/** Live status of a single source as it moves through scraping. */
+/**
+ * Live status of a single source as it moves through scraping. `scrape` states:
+ *   queued   — selected, not yet reached
+ *   scraping — request in flight
+ *   ok       — content retrieved
+ *   blocked  — hard anti-scraping block (403/etc.); domain just added to the blocklist
+ *   skipped  — not attempted; domain was already a known blocker
+ *   empty    — transient failure (timeout/404/5xx); no content, not blocklisted
+ * `ms` is that page's scrape latency (0 for skipped).
+ */
 export interface SourceStatus {
   id: number;
   url: string;
   domain: string;
   title: string;
   intent: string;
-  scrape: "queued" | "scraping" | "ok" | "failed";
+  blocked: boolean; // was on the blocklist at rank time
+  scrape: "queued" | "scraping" | "ok" | "blocked" | "skipped" | "empty";
   chars: number;
+  ms: number;
+}
+
+/** Per-phase and end-to-end latencies (ms), filled in as the scan progresses. */
+export interface Timing {
+  searchMs: number | null;
+  scrapeMs: number | null;
+  analyzeMs: number | null;
+  totalMs: number | null;
 }
 
 /** The full reduced state the UI renders from. */
@@ -51,6 +72,8 @@ export interface ScanState {
   trace: string[];
   /** The exact prompt sent to the model, once analysis begins. */
   prompt: PromptTrace | null;
+  /** Phase + total latencies, for the "path taken" transparency. */
+  timing: Timing;
   report: ScanReport | null;
   error: string | null;
   running: boolean;
@@ -63,6 +86,7 @@ const initialState: ScanState = {
   sources: [],
   trace: [],
   prompt: null,
+  timing: { searchMs: null, scrapeMs: null, analyzeMs: null, totalMs: null },
   report: null,
   error: null,
   running: false,
@@ -79,7 +103,7 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
       return {
         ...state,
         phase,
-        intents: ev.intents.map((i) => ({ label: i.label, query: i.query, status: "pending", count: 0 })),
+        intents: ev.intents.map((i) => ({ label: i.label, query: i.query, status: "pending", count: 0, ms: 0 })),
         trace: [...state.trace, `Generated ${ev.intents.length} search intents.`],
       };
 
@@ -95,18 +119,25 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         ...state,
         phase,
         intents: state.intents.map((i) =>
-          i.label === ev.intent ? { ...i, status: "done", count: ev.count } : i,
+          i.label === ev.intent ? { ...i, status: "done", count: ev.count, ms: ev.ms } : i,
         ),
-        trace: [...state.trace, `↳ “${ev.intent}” → ${ev.count} result${ev.count === 1 ? "" : "s"}`],
+        trace: [...state.trace, `↳ “${ev.intent}” → ${ev.count} result${ev.count === 1 ? "" : "s"} (${fmtMs(ev.ms)})`],
       };
 
-    case "sources":
+    case "sources": {
+      const blocked = ev.sources.filter((s) => s.blocked).length;
       return {
         ...state,
         phase,
-        sources: ev.sources.map((s) => ({ ...s, scrape: "queued", chars: 0 })),
-        trace: [...state.trace, `Selected ${ev.sources.length} sources to scan.`],
+        sources: ev.sources.map((s) => ({ ...s, scrape: s.blocked ? "skipped" : "queued", chars: 0, ms: 0 })),
+        timing: { ...state.timing, searchMs: ev.searchMs },
+        trace: [
+          ...state.trace,
+          `Ranked ${ev.sources.length} sources in ${fmtMs(ev.searchMs)}` +
+            (blocked > 0 ? ` — skipping ${blocked} known blocker${blocked === 1 ? "" : "s"} up front.` : "."),
+        ],
       };
+    }
 
     case "scrape:begin":
       return {
@@ -115,25 +146,40 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         sources: state.sources.map((s) => (s.id === ev.id ? { ...s, scrape: "scraping" } : s)),
       };
 
-    case "scrape:done":
+    case "scrape:done": {
+      // Surface newly-discovered blockers in the activity feed — the "learn from failures" moment.
+      const extraTrace =
+        ev.status === "blocked"
+          ? [...state.trace, `⛔ ${ev.domain} blocked scraping — added to blocklist for next time.`]
+          : state.trace;
       return {
         ...state,
         phase,
         sources: state.sources.map((s) =>
-          s.id === ev.id ? { ...s, scrape: ev.ok ? "ok" : "failed", chars: ev.chars } : s,
+          s.id === ev.id ? { ...s, scrape: ev.status, chars: ev.chars, ms: ev.ms } : s,
         ),
+        trace: extraTrace,
       };
+    }
 
     case "analyze:begin":
       return {
         ...state,
         phase,
         prompt: { model: ev.model, systemPrompt: ev.systemPrompt, userPrompt: ev.userPrompt },
-        trace: [...state.trace, `Corpus assembled. Running inference on ${ev.model}…`],
+        timing: { ...state.timing, scrapeMs: ev.scrapeMs },
+        trace: [...state.trace, `Scraped corpus in ${fmtMs(ev.scrapeMs)}. Running inference on ${ev.model}…`],
       };
 
     case "report":
-      return { ...state, phase: "done", running: false, report: ev.report, trace: [...state.trace, "Scan complete."] };
+      return {
+        ...state,
+        phase: "done",
+        running: false,
+        report: ev.report,
+        timing: { ...state.timing, analyzeMs: ev.analyzeMs, totalMs: ev.totalMs },
+        trace: [...state.trace, `Inference done in ${fmtMs(ev.analyzeMs)}. Scan complete in ${fmtMs(ev.totalMs)}.`],
+      };
 
     case "error":
       return { ...state, phase: "done", running: false, error: ev.message };

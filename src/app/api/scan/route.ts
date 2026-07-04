@@ -42,14 +42,18 @@ export async function POST(req: Request) {
           return;
         }
 
+        // Total-scan stopwatch — reported at the end so the UI can show end-to-end latency.
+        const scanStart = Date.now();
+
         // 1) Intents — instant, emitted before any network work so the UI populates immediately.
         send({ type: "start", industry });
         const intents = buildIntents(industry);
         // Emit full label+query pairs so the UI shows the exact search strings, not just labels.
         send({ type: "intents", intents: intents.map((i) => ({ label: i.label, query: i.query })) });
 
-        // 2 + 3) Search + scrape. `explore` emits search:*/sources/scrape:* events via `send`.
-        const { sources, scraped } = await explore(intents, send);
+        // 2 + 3) Search + scrape. `explore` emits search:*/sources/scrape:* events (with timing)
+        //         and returns the phase durations for the summary.
+        const { sources, scraped, scrapeMs } = await explore(intents, send);
 
         // 4) Analyze. Build the prompt here so we can surface the EXACT prompt to the UI before
         //    the call. generatedAt is stamped here (server time) — one-shot, nothing persisted.
@@ -58,11 +62,14 @@ export async function POST(req: Request) {
           model: currentModel(),
           systemPrompt: SYSTEM_PROMPT,
           userPrompt: buildPrompt(industry, scraped),
+          scrapeMs,
         });
+        const analyzeStart = Date.now();
         const llm = await callLLM(industry, scraped);
         const report = assembleReport(industry, llm, sources, new Date().toISOString());
+        const analyzeMs = Date.now() - analyzeStart;
 
-        send({ type: "report", report });
+        send({ type: "report", report, analyzeMs, totalMs: Date.now() - scanStart });
       } catch (err) {
         const message = err instanceof Error ? err.message : "Unexpected error during scan.";
         send({ type: "error", message });

@@ -13,14 +13,14 @@ import OpenAI from "openai";
 import { LlmReportSchema, type LlmReport, type ScanReport, type Source } from "./schema";
 import type { ScrapedSource } from "./firecrawl";
 import type { TokenUsage } from "./events";
-import { opportunityScore, derivePlayfulStats } from "./scoring";
+import { opportunityScore } from "./scoring";
 import { titleCase } from "./format";
 
 /** Human + model-facing definitions of each 0–10 dimension. Keep in sync with schema.Scores. */
 export const SCORE_DEFINITIONS: { key: string; name: string; definition: string }[] = [
   { key: "pain", name: "Pain Score", definition: "How much frustration, friction, and unmet need shows up (complaints, manual work, workarounds). 10 = severe, chronic pain." },
   { key: "softwareMaturity", name: "Software Maturity", definition: "How modern/complete the existing software ecosystem is. 10 = mature SaaS everywhere; 0 = spreadsheets, paper, legacy tools." },
-  { key: "laborScarcity", name: "Labor Scarcity", definition: "How hard it is to staff the work (open roles, shortages, turnover). 10 = acute shortage." },
+  { key: "founderAccessibility", name: "Founder Accessibility", definition: "How easy is it for an outsider founder (e.g. a college student without deep domain ties) to break into this industry? 10 = very accessible, low barriers to entry; 0 = requires decades of domain relationships, licensing, or regulatory capture." },
   { key: "aiSuitability", name: "AI Suitability", definition: "How well current manual work maps to what AI can automate today. 10 = highly automatable." },
   { key: "budgetSignal", name: "Budget Signal", definition: "Evidence that buyers have money and will pay for software (deal sizes, funded vendors, conferences, associations). 10 = strong budgets." },
 ];
@@ -115,8 +115,7 @@ Produce a JSON object with EXACTLY these fields:
   "underservedNiches": [{ "text", "sourceIds" }],    // Segments or workflows nobody is solving well
   "opportunityThesis": string,        // SEE SPECIAL INSTRUCTIONS BELOW
   "adjacentMarkets": [{ "text", "sourceIds" }],
-  "nextSteps": [{ "text", "sourceIds" }],            // SEE SPECIAL INSTRUCTIONS BELOW
-  "playfulStats": [{ "label", "value" }]
+  "nextSteps": [{ "text", "sourceIds" }]              // SEE SPECIAL INSTRUCTIONS BELOW
 }
 
 SECTION INSTRUCTIONS:
@@ -180,7 +179,7 @@ export async function callLLM(industry: string, sources: ScrapedSource[]): Promi
     client.chat.completions.create({
       model,
       response_format: { type: "json_object" },
-      temperature: 0.6,
+      temperature: 0.2,
       messages: [
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: extra ? `${prompt}\n\n${extra}` : prompt },
@@ -211,8 +210,7 @@ export async function callLLM(industry: string, sources: ScrapedSource[]): Promi
 
 /**
  * Assemble the final ScanReport the UI renders: LLM output + server-owned fields.
- * The server (not the model) owns `sources`, `generatedAt`, the computed `opportunityScore`,
- * and guarantees baseline `playfulStats` so that section is never empty.
+ * The server (not the model) owns `sources`, `generatedAt`, and the computed `opportunityScore`.
  */
 export function assembleReport(
   industry: string,
@@ -221,21 +219,12 @@ export function assembleReport(
   generatedAt: string,
 ): ScanReport {
   const opportunity = opportunityScore(llm.scores);
-  const baselineStats = derivePlayfulStats(llm.scores, opportunity);
-
-  // Merge model stats first (they're bespoke), then any baseline labels not already present.
-  const seenLabels = new Set(llm.playfulStats.map((s) => s.label.toLowerCase()));
-  const mergedStats = [
-    ...llm.playfulStats,
-    ...baselineStats.filter((s) => !seenLabels.has(s.label.toLowerCase())),
-  ];
 
   return {
     ...llm,
     industry: titleCase(industry),
     generatedAt,
     opportunityScore: opportunity,
-    playfulStats: mergedStats,
     sources,
   };
 }

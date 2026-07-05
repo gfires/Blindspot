@@ -8,7 +8,6 @@ import { SCORE_DEFINITIONS } from "@/lib/analyze";
 import { OpportunityMeter } from "./OpportunityMeter";
 import { Gauge } from "./Gauge";
 import { ReportSection, EvidenceList } from "./ReportSection";
-import { PlayfulStats } from "./PlayfulStats";
 import { Citations } from "./SourceChip";
 import { ScanProgress } from "./ScanProgress";
 
@@ -35,9 +34,6 @@ export function ReportView({
           <p className="mt-2 text-sm text-fg/85">{report.snapshot}</p>
         </div>
       </div>
-
-      {/* Playful diagnostic readout */}
-      <PlayfulStats stats={report.playfulStats} />
 
       {/* Five sub-score gauges */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">

@@ -57,7 +57,7 @@ export type Score = z.infer<typeof ScoreSchema>;
 export const ScoresSchema = z.object({
   pain: ScoreSchema,
   softwareMaturity: ScoreSchema,
-  laborScarcity: ScoreSchema,
+  founderAccessibility: ScoreSchema,
   aiSuitability: ScoreSchema,
   budgetSignal: ScoreSchema,
 });
@@ -68,12 +68,6 @@ export const VendorSchema = z.object({
   name: z.string(),
   note: z.string(),
   sourceIds: z.array(z.number().int()).default([]),
-});
-
-/** A shareable "diagnostic readout" stat, e.g. { label: "AI Invasion Risk", value: "89%" }. */
-export const PlayfulStatSchema = z.object({
-  label: z.string(),
-  value: z.string(),
 });
 
 /**
@@ -98,7 +92,6 @@ export const ScanReportSchema = z.object({
   adjacentMarkets: z.array(EvidenceSchema).default([]),
   /** Clear, unambiguous next steps a founder should take. */
   nextSteps: z.array(EvidenceSchema).default([]),
-  playfulStats: z.array(PlayfulStatSchema).default([]),
   sources: z.array(SourceSchema).default([]),
 });
 export type ScanReport = z.infer<typeof ScanReportSchema>;

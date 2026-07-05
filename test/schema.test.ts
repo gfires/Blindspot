@@ -7,7 +7,7 @@ const validLlm = {
   scores: {
     pain: { value: 7, label: "High", reason: "many complaints across forums" },
     softwareMaturity: { value: 3, label: "Legacy", reason: "mostly pre-2010 tools" },
-    laborScarcity: { value: 6, label: "Tight", reason: "open roles outnumber candidates" },
+    founderAccessibility: { value: 4, label: "Hard", reason: "requires regulatory relationships and domain credibility" },
     aiSuitability: { value: 8, label: "Ripe", reason: "repetitive manual workflows" },
     budgetSignal: { value: 5, label: "Some", reason: "mid-market deal sizes" },
   },
@@ -18,7 +18,6 @@ const validLlm = {
   opportunityThesis: "There is a clear opportunity to build X because Y.",
   adjacentMarkets: [{ text: "logistics", sourceIds: [] }],
   nextSteps: [{ text: "Interview 10 coordinators to validate pain", sourceIds: [] }],
-  playfulStats: [{ label: "Excel Dependency", value: "Severe" }],
 };
 
 describe("LlmReportSchema", () => {

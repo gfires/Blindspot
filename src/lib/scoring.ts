@@ -15,7 +15,7 @@ import type { Scores } from "./schema";
  * Weights for the composite Opportunity Score. They sum to 1.0.
  *
  * Intuition: an *opportunity* for an AI-native business is high when there's a lot of pain,
- * the incumbent software is weak, labor is scarce (so automation has leverage), the work is
+ * the incumbent software is weak, the industry is accessible to outsider founders, the work is
  * suitable for AI, and there's budget to pay for a solution.
  *
  * `softwareMaturity` is INVERTED before weighting — mature software means LESS opportunity.
@@ -23,7 +23,7 @@ import type { Scores } from "./schema";
 export const OPPORTUNITY_WEIGHTS = {
   pain: 0.25,
   softwareGap: 0.2, // = (10 - softwareMaturity)
-  laborScarcity: 0.2,
+  founderAccessibility: 0.2,
   aiSuitability: 0.2,
   budgetSignal: 0.15,
 } as const;
@@ -37,7 +37,7 @@ export function opportunityScore(scores: Scores): number {
   const weighted =
     scores.pain.value * OPPORTUNITY_WEIGHTS.pain +
     softwareGap * OPPORTUNITY_WEIGHTS.softwareGap +
-    scores.laborScarcity.value * OPPORTUNITY_WEIGHTS.laborScarcity +
+    scores.founderAccessibility.value * OPPORTUNITY_WEIGHTS.founderAccessibility +
     scores.aiSuitability.value * OPPORTUNITY_WEIGHTS.aiSuitability +
     scores.budgetSignal.value * OPPORTUNITY_WEIGHTS.budgetSignal;
   // weighted is on a 0–10 scale (weights sum to 1); scale to 0–100 and round.
@@ -53,28 +53,3 @@ export function severityWord(v: number): string {
   return "Low";
 }
 
-/**
- * Derive the playful "diagnostic readout" stats from the scores. These are the shareable,
- * tongue-in-cheek lines ("AI Invasion Risk: 89%", "Software Maturity: 2008") that give the
- * report its personality. All derived deterministically so they're consistent with the gauges.
- *
- * The model MAY also return its own playfulStats; the route merges these in as a guaranteed
- * baseline so the section is never empty.
- */
-export function derivePlayfulStats(scores: Scores, opportunity: number): { label: string; value: string }[] {
-  const sw = scores.softwareMaturity.value;
-  // Map software maturity (0–10) to a cheeky "software era" year. Low maturity => older year.
-  const era = Math.round(2005 + sw * 2); // 0 => 2005, 10 => 2025
-  const aiInvasion = Math.round(scores.aiSuitability.value * 10);
-  const excelDependency = severityWord(10 - sw); // immature software => more Excel
-  const civReadiness = Math.round(sw * 8 + scores.budgetSignal.value * 2); // 0–100-ish
-
-  return [
-    { label: "Excel Dependency", value: excelDependency },
-    { label: "AI Invasion Risk", value: `${aiInvasion}%` },
-    { label: "Civilizational Readiness", value: `${clamp(civReadiness, 0, 100)}%` },
-    { label: "Founder Excitement Index", value: `${clamp(opportunity + 4, 0, 100)}%` },
-    { label: "Software Maturity", value: `${era}` },
-    { label: "Labor Squeeze", value: severityWord(scores.laborScarcity.value) },
-  ];
-}

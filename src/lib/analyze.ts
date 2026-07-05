@@ -74,9 +74,16 @@ shortages, software gaps, and AI-native business opportunities are.
 Hard rules:
 - Ground EVERY score and EVERY claim in the provided sources. Cite them by their [id] number via \
 the sourceIds arrays. Do not invent facts that no source supports.
+- USE DIRECT QUOTES. Pull exact phrases, sentences, or fragments from the source text and embed \
+them in your claims using quotation marks. Example: Multiple coordinators describe the process as \
+"manual and unbelievably tedious" [3] while vendors admit "we still fax 40% of orders" [7]. The \
+reader should feel like they're hearing real voices, not reading a summary.
+- Every evidence item should be a SPECIFIC THESIS backed by concrete details — names, numbers, \
+quotes, patterns — not a generic observation. BAD: "Many companies use outdated software." \
+GOOD: "Three of the top five vendors (Procore, Viewpoint, Sage 300) were founded pre-2005 and \
+users on Reddit call them 'the necessary evil' [4] — 'if it crashes one more time I'm going back \
+to spreadsheets' [9]."
 - Scores are heuristic and 0–10 (except opportunityScore which you do NOT output — the app computes it).
-- Be specific and evidence-led ("frequent mentions of Excel", "many open coordinator roles", \
-"only legacy vendors, no modern startups"), not generic.
 - Keep the tone confident and a little fun, like a Bloomberg terminal with a sense of humor.
 - Return ONLY valid JSON matching the requested schema. No prose outside the JSON.`;
 
@@ -109,6 +116,12 @@ Produce a JSON object with EXACTLY these fields:
   "startupConcepts": [{ "name", "pitch", "sourceIds" }],   // 3-5 playful, concrete AI-native startup ideas
   "playfulStats": [{ "label", "value" }]           // e.g. { "label": "Excel Dependency", "value": "Severe" }
 }
+
+CRITICAL — every "text", "why", "note", and "evidence" string MUST include direct quotes pulled \
+verbatim from the sources in quotation marks, with the source [id] immediately after. Build each \
+item as a specific thesis supported by concrete details (names, numbers, exact phrases from real \
+people/companies), NOT a generic summary. The reader should encounter real voices and hard data, \
+not paraphrased abstractions.
 
 Aim for 3-6 items in each list. Every item's sourceIds MUST reference the sources below.
 

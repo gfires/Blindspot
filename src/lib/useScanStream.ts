@@ -150,7 +150,11 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         ...state,
         phase,
         candidateCount: ev.candidates,
-        trace: [...state.trace, `Scoring ${ev.candidates} candidate sources for relevance (${ev.model})…`],
+        trace: [
+          ...state.trace,
+          `Scoring ${ev.candidates} candidate sources for relevance (${ev.model})…`
+            + (ev.blocked > 0 ? ` (${ev.blocked} known blocker${ev.blocked === 1 ? "" : "s"} pre-filtered)` : ""),
+        ],
       };
 
     case "triage:done":
@@ -160,7 +164,8 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         timing: { ...state.timing, triageMs: ev.ms },
         trace: [
           ...state.trace,
-          `Triaged ${ev.candidates} candidates → selected ${ev.selected} to scrape (${fmtMs(ev.ms)}).`,
+          `Triaged ${ev.candidates} candidates → selected ${ev.selected} to scrape (${fmtMs(ev.ms)})`
+            + (ev.blocked > 0 ? `, ${ev.blocked} blocked domain${ev.blocked === 1 ? "" : "s"} excluded.` : "."),
         ],
       };
 

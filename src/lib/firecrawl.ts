@@ -300,27 +300,35 @@ export async function explore(
   // --- Search + dedupe ---
   const searchStart = now();
   const hits = await searchAllIntents(app, intents, onEvent, now);
-  const candidates = dedupeCandidates(hits);
+  const allCandidates = dedupeCandidates(hits);
   const searchMs = now() - searchStart;
+
+  // Filter out blocklisted domains BEFORE triage so they don't waste scrape slots or LLM attention.
+  const blockset = await loadBlocklist();
+  const blocked: Candidate[] = [];
+  const candidates: Candidate[] = [];
+  for (const c of allCandidates) {
+    if (blockset.has(blocklistKey(domainOf(c.url)))) blocked.push(c);
+    else candidates.push(c);
+  }
 
   // --- (c) Triage: score candidates before scraping ---
   const triageStart = now();
-  onEvent({ type: "triage:begin", model: triageModel(), candidates: candidates.length });
+  onEvent({ type: "triage:begin", model: triageModel(), candidates: candidates.length, blocked: blocked.length });
   const scores = await scoreCandidates(industry, candidates);
   const sources = selectSources(candidates, scores, maxScrape, quotaFloor);
   onEvent({
     type: "triage:done",
     candidates: candidates.length,
     selected: sources.length,
+    blocked: blocked.length,
     adapted,
     ms: now() - triageStart,
   });
 
-  // Flag blocklisted domains so the UI can show them as intentionally skipped.
-  const blockset = await loadBlocklist();
   const ranked: RankedSource[] = sources.map((source) => ({
     source,
-    blocked: blockset.has(blocklistKey(source.domain)),
+    blocked: false,
   }));
 
   onEvent({

@@ -116,15 +116,30 @@ export function ReportView({
         </div>
       </ReportSection>
 
-      {/* Source appendix — the full [N] list */}
-      <ReportSection index="—" title="Sources" subtitle="Every score and claim above cites these by number.">
-        <ol className="space-y-1">
+      {/* Source appendix — the full [N] list with triage scores */}
+      <ReportSection index="—" title="Sources" subtitle="Every score and claim above cites these by number. Relevance scores (0–10) show how useful each source was judged before scraping.">
+        <ol className="space-y-1.5">
           {sources.map((s) => (
-            <li key={s.id} className="flex gap-2 font-mono text-[12px]">
-              <span className="nums w-7 shrink-0 text-accent">[{s.id}]</span>
-              <a href={s.url} target="_blank" rel="noreferrer" className="truncate text-mute hover:text-accent" title={s.url}>
-                {s.title} · {s.domain}
-              </a>
+            <li key={s.id} className="font-mono text-[12px]">
+              <div className="flex items-center gap-2">
+                <span className="nums w-7 shrink-0 text-accent">[{s.id}]</span>
+                {s.relevanceScore != null && (
+                  <span
+                    className={`nums w-5 shrink-0 text-center text-[10px] font-semibold ${
+                      s.relevanceScore >= 7 ? "text-accent" : s.relevanceScore >= 4 ? "text-fg/60" : "text-danger/70"
+                    }`}
+                  >
+                    {s.relevanceScore}
+                  </span>
+                )}
+                <a href={s.url} target="_blank" rel="noreferrer" className="flex-1 truncate text-fg/80 hover:text-accent" title={s.url}>
+                  {s.title}
+                </a>
+                <span className="shrink-0 text-[10px] text-mute">{s.domain}</span>
+              </div>
+              {s.reason && (
+                <div className="ml-12 mt-0.5 text-[10px] text-mute/70">{s.reason}</div>
+              )}
             </li>
           ))}
         </ol>
@@ -164,7 +179,7 @@ export function ReportView({
         <summary className="cursor-pointer font-mono text-xs uppercase tracking-widest text-fg/70">
           Exploration trace
           <span className="ml-2 normal-case tracking-normal text-mute">
-            {scan.sources.length} sources · {scan.timing.totalMs != null ? `${(scan.timing.totalMs / 1000).toFixed(1)}s` : ""} · search path, scrape &amp; prompt
+            {scan.candidateCount > 0 && `${scan.candidateCount} candidates → `}{scan.sources.length} scraped · {scan.timing.totalMs != null ? `${(scan.timing.totalMs / 1000).toFixed(1)}s` : ""} · {scan.intentsAdapted ? "adapted intents" : "static intents"}
           </span>
         </summary>
         <div className="mt-4">

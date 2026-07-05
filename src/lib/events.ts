@@ -29,10 +29,10 @@ export type ScanEvent =
   | { type: "search:begin"; intent: string }
   /** A single intent's search returned N results. `ms` is the search latency for that intent. */
   | { type: "search:done"; intent: string; count: number; ms: number }
-  /** The pre-scrape triage (c) LLM step has begun, scoring `candidates` deduped hits. */
-  | { type: "triage:begin"; model: string; candidates: number }
-  /** Triage finished: scored `candidates` hits, selected `selected` to scrape. `ms` = latency. */
-  | { type: "triage:done"; candidates: number; selected: number; adapted: boolean; ms: number }
+  /** The pre-scrape triage (c) LLM step has begun, scoring `candidates` deduped hits. `blocked` = pre-filtered known blockers. */
+  | { type: "triage:begin"; model: string; candidates: number; blocked: number }
+  /** Triage finished: scored `candidates` hits, selected `selected` to scrape. `blocked` = pre-filtered. `ms` = latency. */
+  | { type: "triage:done"; candidates: number; selected: number; blocked: number; adapted: boolean; ms: number }
   /**
    * The triaged, selected set of sources chosen for scraping. Sent after triage so the UI can
    * render the source list (with relevance scores) before scraping ticks through it. Each source

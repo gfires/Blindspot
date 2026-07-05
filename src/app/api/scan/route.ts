@@ -14,7 +14,7 @@
  * Runtime: `nodejs` (the Firecrawl + OpenAI SDKs need Node APIs) and no timeout cap so
  * the ~30–60s scan can complete.
  */
-import { buildIntents, normalizeIndustry } from "@/lib/intents";
+import { normalizeIndustry } from "@/lib/intents";
 import { explore } from "@/lib/firecrawl";
 import { callLLM, assembleReport, buildPrompt, SYSTEM_PROMPT, currentModel } from "@/lib/analyze";
 import type { ScanEvent } from "@/lib/events";
@@ -44,16 +44,12 @@ export async function POST(req: Request) {
 
         // Total-scan stopwatch — reported at the end so the UI can show end-to-end latency.
         const scanStart = Date.now();
-
-        // 1) Intents — instant, emitted before any network work so the UI populates immediately.
         send({ type: "start", industry });
-        const intents = buildIntents(industry);
-        // Emit full label+query pairs so the UI shows the exact search strings, not just labels.
-        send({ type: "intents", intents: intents.map((i) => ({ label: i.label, query: i.query })) });
 
-        // 2 + 3) Search + scrape. `explore` emits search:*/sources/scrape:* events (with timing)
-        //         and returns the phase durations for the summary.
-        const { sources, scraped, scrapeMs } = await explore(intents, send);
+        // Exploration: adapt intents → search → dedupe → triage → select → scrape. `explore`
+        // owns intent generation now and emits adapt/intents/search/triage/sources/scrape events
+        // (with timing), returning the phase durations for the summary.
+        const { sources, scraped, scrapeMs } = await explore(industry, send);
 
         // 4) Analyze. Build the prompt here so we can surface the EXACT prompt to the UI before
         //    the call. generatedAt is stamped here (server time) — one-shot, nothing persisted.

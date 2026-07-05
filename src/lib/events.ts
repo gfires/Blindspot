@@ -12,31 +12,46 @@
 import type { ScanReport } from "./schema";
 
 /** Coarse pipeline stages, used to drive the progress header. */
-export type ScanPhase = "intents" | "search" | "scrape" | "analyze" | "done";
+export type ScanPhase = "adapt" | "intents" | "search" | "triage" | "scrape" | "analyze" | "done";
 
 export type ScanEvent =
   /** Emitted once at the very start with the parsed industry. */
   | { type: "start"; industry: string }
+  /** The adaptive-intents (a) LLM step has begun (before intents are known). */
+  | { type: "adapt:begin"; model: string }
   /**
-   * The generated search intents, emitted before any network calls. Each carries both the
-   * human label and the FULL search query string that will be sent to Firecrawl, so the UI
-   * can show exactly what's being searched — not just the category.
+   * The search intents to run. `adapted` = true when an LLM tailored them to the industry, false
+   * when we fell back to the static templates. Each carries the human label and the FULL query
+   * string, so the UI shows exactly what's being searched. `ms` is the adapt-step latency.
    */
-  | { type: "intents"; intents: { label: string; query: string }[] }
+  | { type: "intents"; intents: { label: string; query: string }[]; adapted: boolean; ms: number }
   /** A single intent's search has begun. */
   | { type: "search:begin"; intent: string }
   /** A single intent's search returned N results. `ms` is the search latency for that intent. */
   | { type: "search:done"; intent: string; count: number; ms: number }
+  /** The pre-scrape triage (c) LLM step has begun, scoring `candidates` deduped hits. */
+  | { type: "triage:begin"; model: string; candidates: number }
+  /** Triage finished: scored `candidates` hits, selected `selected` to scrape. `ms` = latency. */
+  | { type: "triage:done"; candidates: number; selected: number; adapted: boolean; ms: number }
   /**
-   * The deduped, ranked set of sources chosen for scraping. Sent after all searches finish so
-   * the UI can render the full source list before scraping ticks through it. Each source carries
-   * `blocked` (true = on the known-blocker list, so it will be SKIPPED, not scraped) — see
-   * lib/blocklist.ts. `searchMs` is the total wall-clock of the search phase.
+   * The triaged, selected set of sources chosen for scraping. Sent after triage so the UI can
+   * render the source list (with relevance scores) before scraping ticks through it. Each source
+   * carries `blocked` (true = known-blocker, will be SKIPPED) and its triage `relevanceScore` +
+   * `reason` (absent if triage was unavailable). `searchMs` is the search-phase wall-clock.
    */
   | {
       type: "sources";
       searchMs: number;
-      sources: { id: number; url: string; domain: string; title: string; intent: string; blocked: boolean }[];
+      sources: {
+        id: number;
+        url: string;
+        domain: string;
+        title: string;
+        intent: string;
+        blocked: boolean;
+        relevanceScore?: number;
+        reason?: string;
+      }[];
     }
   /** A page scrape has started (id maps to the `sources` list above). */
   | { type: "scrape:begin"; id: number; domain: string }
@@ -71,12 +86,17 @@ export type ScanEvent =
 export function phaseFor(type: ScanEvent["type"]): ScanPhase {
   switch (type) {
     case "start":
+    case "adapt:begin":
+      return "adapt";
     case "intents":
       return "intents";
     case "search:begin":
     case "search:done":
-    case "sources":
       return "search";
+    case "triage:begin":
+    case "triage:done":
+    case "sources":
+      return "triage";
     case "scrape:begin":
     case "scrape:done":
       return "scrape";

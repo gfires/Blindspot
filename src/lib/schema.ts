@@ -21,6 +21,14 @@ export const SourceSchema = z.object({
   title: z.string(),
   /** Which search intent surfaced this source (e.g. "labor shortage"). */
   intent: z.string(),
+  /**
+   * Pre-scrape triage score (0–10) — how useful the LLM judged this hit before we spent a scrape.
+   * Optional: absent when triage is unavailable, and the analysis LLM echoing sources back need
+   * not supply it. See triage.ts.
+   */
+  relevanceScore: z.number().min(0).max(10).optional(),
+  /** One-line triage rationale for why this source was (or wasn't) worth scraping. */
+  reason: z.string().optional(),
 });
 export type Source = z.infer<typeof SourceSchema>;
 

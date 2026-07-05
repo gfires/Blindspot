@@ -50,6 +50,22 @@ export function renderCorpus(sources: ScrapedSource[]): string {
     .join("\n\n---\n\n");
 }
 
+/**
+ * The 8 report sections, in order — the scan's final "destination". Shared so the adaptive-intents
+ * step (triage.ts) can tell the LLM what evidence the report ultimately needs, keeping the search
+ * intents aligned with what we render. Keep in sync with the section order in ReportView.
+ */
+export const REPORT_SECTIONS: string[] = [
+  "Industry Snapshot",
+  "Detected Bottlenecks",
+  "Current Software Ecosystem",
+  "Signals of Friction",
+  "Potential AI Opportunities",
+  "Underserved Niches",
+  "Adjacent Markets",
+  "Example Startup Concepts",
+];
+
 /** The system prompt: role + hard rules. Kept transparent and short. */
 export const SYSTEM_PROMPT = `You are Opportunity MRI, a playful but sharp industry-diagnostics engine. \
 You read raw web sources about an industry and infer where the structural inefficiencies, labor \

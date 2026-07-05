@@ -24,6 +24,7 @@ import type { Source } from "./schema";
 import type { Intent } from "./intents";
 import { domainOf, truncate } from "./format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "./blocklist";
+import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "./triage";
 
 /** Per-page markdown budget (chars). Keeps the LLM prompt within token limits. */
 const MAX_CHARS_PER_PAGE = 3500;
@@ -63,8 +64,9 @@ export interface ScrapedSource extends Source {
 /** Read tuning knobs from env with sensible defaults. */
 function config() {
   return {
-    resultsPerIntent: Number(process.env.SCAN_RESULTS_PER_INTENT ?? 5),
+    resultsPerIntent: Number(process.env.SCAN_RESULTS_PER_INTENT ?? 8),
     maxScrape: Number(process.env.SCAN_MAX_SCRAPE ?? 28),
+    quotaFloor: Number(process.env.SCAN_QUOTA_FLOOR ?? 2),
   };
 }
 
@@ -118,46 +120,27 @@ async function searchAllIntents(
 }
 
 /**
- * Dedupe and rank search hits into the final citable Source list.
+ * Dedupe search hits into unique triage candidates, MERGING the intents that surfaced each URL.
  *
- * Ranking goal: DIVERSITY across intents. We interleave hits round-robin by intent so the
- * scraped set represents software, jobs, complaints, forums, etc. rather than 28 pages that
- * all came from one dominant query. Sources are assigned stable [N] ids in final order.
+ * A URL found by both "complaints" and "forum" becomes one candidate tagged with both intents —
+ * that intent-count is a centrality signal the triage LLM sees (triage.ts). Selection (which used
+ * to be blind round-robin here) now happens downstream in `selectSources` using triage scores.
  */
-export function rankSources(hits: SearchHit[], maxScrape: number): Source[] {
-  // Dedupe by normalized URL, keeping the first (highest-ranked) occurrence.
-  const seen = new Set<string>();
-  const byIntent = new Map<string, SearchHit[]>();
+export function dedupeCandidates(hits: SearchHit[]): Candidate[] {
+  const byUrl = new Map<string, Candidate>();
   for (const h of hits) {
+    // Normalize away fragments/queries/trailing slash so near-identical URLs collapse.
     const key = h.url.replace(/[#?].*$/, "").replace(/\/$/, "");
-    if (seen.has(key)) continue;
-    seen.add(key);
-    if (!byIntent.has(h.intent)) byIntent.set(h.intent, []);
-    byIntent.get(h.intent)!.push(h);
-  }
-
-  // Round-robin interleave across intents for diversity.
-  const buckets = [...byIntent.values()];
-  const ordered: SearchHit[] = [];
-  for (let i = 0; ordered.length < maxScrape; i++) {
-    let advanced = false;
-    for (const bucket of buckets) {
-      if (bucket[i]) {
-        ordered.push(bucket[i]);
-        advanced = true;
-        if (ordered.length >= maxScrape) break;
-      }
+    const existing = byUrl.get(key);
+    if (existing) {
+      if (!existing.intents.includes(h.intent)) existing.intents.push(h.intent);
+      // Prefer a non-empty snippet/title if the first occurrence lacked one.
+      if (!existing.snippet && h.snippet) existing.snippet = h.snippet;
+      continue;
     }
-    if (!advanced) break; // all buckets exhausted
+    byUrl.set(key, { url: h.url, title: h.title, snippet: h.snippet, intents: [h.intent] });
   }
-
-  return ordered.map((h, idx) => ({
-    id: idx + 1, // 1-based [N] citation ids
-    url: h.url,
-    domain: domainOf(h.url),
-    title: h.title,
-    intent: h.intent,
-  }));
+  return [...byUrl.values()];
 }
 
 /** Wrap a promise with a timeout so a single hung scrape can't stall the pipeline. */
@@ -276,30 +259,62 @@ async function scrapeSources(
 }
 
 /**
- * The full exploration step. Given intents, returns the scraped corpus + the Source list
- * (emitted mid-way via the `sources` event so the UI can render it before scraping starts).
+ * The full exploration step, now with LLM judgment in the loop:
  *
- * Also cross-references each ranked source against the running blocklist (lib/blocklist.ts):
- * blocklisted domains are flagged `blocked: true` in the `sources` event (shown in the UI as
- * "skipped — known blocker") and are not scraped. Emits phase timings (searchMs) for the UI.
+ *   (a) ADAPT  — makeIntents(industry) designs industry-specific search intents (fallback: static).
+ *       SEARCH — run all intents (8 results each) in parallel; emit per-intent timing.
+ *       DEDUPE — collapse to unique candidates, merging the intents that found each URL.
+ *   (c) TRIAGE — scoreCandidates() scores each candidate 0–10 before we spend any scrape.
+ *       SELECT — selectSources() picks the final set (per-intent quota floor + merit fill), each
+ *                carrying its relevanceScore + reason.
+ *       SCRAPE — bounded concurrency + blocklist skip (unchanged).
  *
- * @param now     Monotonic clock (defaults to Date.now); injected for deterministic tests.
- * @param nowIso  ISO time used when a newly-discovered blocker is recorded.
+ * Every source is cross-referenced against the running blocklist (lib/blocklist.ts) and flagged
+ * `blocked` so the UI shows it as intentionally skipped. Both LLM steps fall back gracefully — a
+ * failure never throws, it degrades to today's behavior. Emits phase timings for the UI.
+ *
+ * @param industry  the raw industry string (intent generation happens here now).
+ * @param now       Monotonic clock (defaults to Date.now); injected for deterministic tests.
+ * @param nowIso    ISO time used when a newly-discovered blocker is recorded.
  */
 export async function explore(
-  intents: Intent[],
+  industry: string,
   onEvent: (e: ScanEvent) => void,
   now: Clock = () => Date.now(),
   nowIso: string = new Date().toISOString(),
 ): Promise<{ sources: Source[]; scraped: ScrapedSource[]; searchMs: number; scrapeMs: number }> {
   const app = makeFirecrawl();
-  const { maxScrape } = config();
+  const { maxScrape, quotaFloor } = config();
 
-  // --- Search phase ---
+  // --- (a) Adapt intents ---
+  const adaptStart = now();
+  onEvent({ type: "adapt:begin", model: triageModel() });
+  const { intents, adapted } = await makeIntents(industry);
+  onEvent({
+    type: "intents",
+    intents: intents.map((i) => ({ label: i.label, query: i.query })),
+    adapted,
+    ms: now() - adaptStart,
+  });
+
+  // --- Search + dedupe ---
   const searchStart = now();
   const hits = await searchAllIntents(app, intents, onEvent, now);
-  const sources = rankSources(hits, maxScrape);
+  const candidates = dedupeCandidates(hits);
   const searchMs = now() - searchStart;
+
+  // --- (c) Triage: score candidates before scraping ---
+  const triageStart = now();
+  onEvent({ type: "triage:begin", model: triageModel(), candidates: candidates.length });
+  const scores = await scoreCandidates(industry, candidates);
+  const sources = selectSources(candidates, scores, maxScrape, quotaFloor);
+  onEvent({
+    type: "triage:done",
+    candidates: candidates.length,
+    selected: sources.length,
+    adapted,
+    ms: now() - triageStart,
+  });
 
   // Flag blocklisted domains so the UI can show them as intentionally skipped.
   const blockset = await loadBlocklist();

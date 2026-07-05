@@ -52,11 +52,16 @@ export interface SourceStatus {
   scrape: "queued" | "scraping" | "ok" | "blocked" | "skipped" | "empty";
   chars: number;
   ms: number;
+  /** Pre-scrape triage score (0–10) and rationale, if triage ran. */
+  relevanceScore?: number;
+  reason?: string;
 }
 
 /** Per-phase and end-to-end latencies (ms), filled in as the scan progresses. */
 export interface Timing {
+  adaptMs: number | null;
   searchMs: number | null;
+  triageMs: number | null;
   scrapeMs: number | null;
   analyzeMs: number | null;
   totalMs: number | null;
@@ -67,7 +72,11 @@ export interface ScanState {
   phase: ScanPhase | "idle";
   industry: string;
   intents: IntentStatus[];
+  /** Whether the intents were LLM-adapted to the industry (vs. static fallback). */
+  intentsAdapted: boolean;
   sources: SourceStatus[];
+  /** Count of deduped candidates triage scored (0 until triage runs). */
+  candidateCount: number;
   /** Human-readable log lines, newest last — feeds the terminal-style activity feed. */
   trace: string[];
   /** The exact prompt sent to the model, once analysis begins. */
@@ -83,10 +92,12 @@ const initialState: ScanState = {
   phase: "idle",
   industry: "",
   intents: [],
+  intentsAdapted: false,
   sources: [],
+  candidateCount: 0,
   trace: [],
   prompt: null,
-  timing: { searchMs: null, scrapeMs: null, analyzeMs: null, totalMs: null },
+  timing: { adaptMs: null, searchMs: null, triageMs: null, scrapeMs: null, analyzeMs: null, totalMs: null },
   report: null,
   error: null,
   running: false,
@@ -99,12 +110,22 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
     case "start":
       return { ...state, phase, industry: ev.industry, trace: [`Initializing MRI scan for “${ev.industry}”…`] };
 
+    case "adapt:begin":
+      return { ...state, phase, trace: [...state.trace, `Designing search intents for this industry (${ev.model})…`] };
+
     case "intents":
       return {
         ...state,
         phase,
         intents: ev.intents.map((i) => ({ label: i.label, query: i.query, status: "pending", count: 0, ms: 0 })),
-        trace: [...state.trace, `Generated ${ev.intents.length} search intents.`],
+        intentsAdapted: ev.adapted,
+        timing: { ...state.timing, adaptMs: ev.ms },
+        trace: [
+          ...state.trace,
+          ev.adapted
+            ? `Designed ${ev.intents.length} industry-specific intents (${fmtMs(ev.ms)}).`
+            : `Using ${ev.intents.length} standard intents (adaptation unavailable).`,
+        ],
       };
 
     case "search:begin":
@@ -124,16 +145,40 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         trace: [...state.trace, `↳ “${ev.intent}” → ${ev.count} result${ev.count === 1 ? "" : "s"} (${fmtMs(ev.ms)})`],
       };
 
+    case "triage:begin":
+      return {
+        ...state,
+        phase,
+        candidateCount: ev.candidates,
+        trace: [...state.trace, `Scoring ${ev.candidates} candidate sources for relevance (${ev.model})…`],
+      };
+
+    case "triage:done":
+      return {
+        ...state,
+        phase,
+        timing: { ...state.timing, triageMs: ev.ms },
+        trace: [
+          ...state.trace,
+          `Triaged ${ev.candidates} candidates → selected ${ev.selected} to scrape (${fmtMs(ev.ms)}).`,
+        ],
+      };
+
     case "sources": {
       const blocked = ev.sources.filter((s) => s.blocked).length;
       return {
         ...state,
         phase,
-        sources: ev.sources.map((s) => ({ ...s, scrape: s.blocked ? "skipped" : "queued", chars: 0, ms: 0 })),
+        sources: ev.sources.map((s) => ({
+          ...s,
+          scrape: s.blocked ? "skipped" : "queued",
+          chars: 0,
+          ms: 0,
+        })),
         timing: { ...state.timing, searchMs: ev.searchMs },
         trace: [
           ...state.trace,
-          `Ranked ${ev.sources.length} sources in ${fmtMs(ev.searchMs)}` +
+          `Search phase ${fmtMs(ev.searchMs)}` +
             (blocked > 0 ? ` — skipping ${blocked} known blocker${blocked === 1 ? "" : "s"} up front.` : "."),
         ],
       };

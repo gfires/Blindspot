@@ -4,7 +4,7 @@ import type { Scores } from "@/lib/schema";
 
 /** Build a Scores object with the same value for every dimension (test helper). */
 function scoresOf(v: number, overrides: Partial<Record<keyof Scores, number>> = {}): Scores {
-  const mk = (val: number) => ({ value: val, label: "", evidence: [] });
+  const mk = (val: number) => ({ value: val, label: "", reason: "" });
   return {
     pain: mk(overrides.pain ?? v),
     softwareMaturity: mk(overrides.softwareMaturity ?? v),
@@ -30,15 +30,15 @@ describe("opportunityScore", () => {
 
   it("mature software LOWERS opportunity (inverted dimension)", () => {
     const base = scoresOf(5);
-    const immature = opportunityScore({ ...base, softwareMaturity: { value: 1, label: "", evidence: [] } });
-    const mature = opportunityScore({ ...base, softwareMaturity: { value: 9, label: "", evidence: [] } });
+    const immature = opportunityScore({ ...base, softwareMaturity: { value: 1, label: "", reason: "" } });
+    const mature = opportunityScore({ ...base, softwareMaturity: { value: 9, label: "", reason: "" } });
     expect(immature).toBeGreaterThan(mature);
   });
 
   it("more pain RAISES opportunity", () => {
     const base = scoresOf(5);
-    const low = opportunityScore({ ...base, pain: { value: 1, label: "", evidence: [] } });
-    const high = opportunityScore({ ...base, pain: { value: 9, label: "", evidence: [] } });
+    const low = opportunityScore({ ...base, pain: { value: 1, label: "", reason: "" } });
+    const high = opportunityScore({ ...base, pain: { value: 9, label: "", reason: "" } });
     expect(high).toBeGreaterThan(low);
   });
 

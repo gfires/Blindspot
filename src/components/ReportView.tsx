@@ -46,21 +46,16 @@ export function ReportView({
             key={d.key}
             name={d.name}
             score={report.scores[d.key as keyof ScanReport["scores"]]}
-            sources={sources}
           />
         ))}
       </div>
 
-      {/* Sections in the spec's order */}
+      {/* Sections in order: snapshot, ecosystem, bottlenecks, niches, thesis, adjacent, next steps */}
       <ReportSection index="01" title="Industry Snapshot">
         <p className="text-sm leading-relaxed text-fg/90">{report.snapshot}</p>
       </ReportSection>
 
-      <ReportSection index="02" title="Detected Bottlenecks">
-        <EvidenceList items={report.bottlenecks} sources={sources} />
-      </ReportSection>
-
-      <ReportSection index="03" title="Current Software Ecosystem" subtitle={report.softwareEcosystem.summary}>
+      <ReportSection index="02" title="Current Software Ecosystem" subtitle={report.softwareEcosystem.summary}>
         {report.softwareEcosystem.vendors.length === 0 ? (
           <p className="text-sm text-mute">No distinct vendors surfaced.</p>
         ) : (
@@ -76,44 +71,24 @@ export function ReportView({
         )}
       </ReportSection>
 
-      <ReportSection index="04" title="Signals of Friction">
-        <EvidenceList items={report.frictionSignals} sources={sources} />
+      <ReportSection index="03" title="Bottlenecks">
+        <EvidenceList items={report.bottlenecks} sources={sources} />
       </ReportSection>
 
-      <ReportSection index="05" title="Potential AI Opportunities">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {report.aiOpportunities.map((o, i) => (
-            <div key={i} className="rounded border border-line bg-panel2 p-3">
-              <div className="font-mono text-sm text-accent">{o.title}</div>
-              <p className="mt-1 text-[13px] leading-snug text-fg/85">{o.why}</p>
-              <div className="mt-1.5">
-                <Citations ids={o.sourceIds} sources={sources} />
-              </div>
-            </div>
-          ))}
-        </div>
-      </ReportSection>
-
-      <ReportSection index="06" title="Underserved Niches">
+      <ReportSection index="04" title="Underserved Niches">
         <EvidenceList items={report.underservedNiches} sources={sources} />
       </ReportSection>
 
-      <ReportSection index="07" title="Adjacent Markets">
+      <ReportSection index="05" title="Opportunity Thesis">
+        <p className="text-sm leading-relaxed text-fg/90">{report.opportunityThesis}</p>
+      </ReportSection>
+
+      <ReportSection index="06" title="Adjacent Markets">
         <EvidenceList items={report.adjacentMarkets} sources={sources} />
       </ReportSection>
 
-      <ReportSection index="08" title="Example Startup Concepts">
-        <div className="grid gap-3 sm:grid-cols-2">
-          {report.startupConcepts.map((c, i) => (
-            <div key={i} className="rounded border border-line bg-panel2 p-3">
-              <div className="font-mono text-sm text-amber">{c.name}</div>
-              <p className="mt-1 text-[13px] leading-snug text-fg/85">{c.pitch}</p>
-              <div className="mt-1.5">
-                <Citations ids={c.sourceIds} sources={sources} />
-              </div>
-            </div>
-          ))}
-        </div>
+      <ReportSection index="07" title="Next Steps">
+        <EvidenceList items={report.nextSteps} sources={sources} />
       </ReportSection>
 
       {/* Source appendix — the full [N] list with triage scores */}

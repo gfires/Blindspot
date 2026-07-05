@@ -43,12 +43,13 @@ export const EvidenceSchema = z.object({
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;
 
-/** A 0–10 diagnostic sub-score with its supporting evidence. */
+/** A 0–10 diagnostic sub-score with a brief rationale. */
 export const ScoreSchema = z.object({
   value: z.number().min(0).max(10),
   /** Short qualitative label, e.g. "Severe", "Legacy-heavy". */
   label: z.string(),
-  evidence: z.array(EvidenceSchema).default([]),
+  /** One-sentence explanation — the detailed evidence lives in the report body. */
+  reason: z.string().default(""),
 });
 export type Score = z.infer<typeof ScoreSchema>;
 
@@ -69,20 +70,6 @@ export const VendorSchema = z.object({
   sourceIds: z.array(z.number().int()).default([]),
 });
 
-/** A concrete AI opportunity within the industry. */
-export const OpportunitySchema = z.object({
-  title: z.string(),
-  why: z.string(),
-  sourceIds: z.array(z.number().int()).default([]),
-});
-
-/** A playful, speculative startup concept. */
-export const StartupConceptSchema = z.object({
-  name: z.string(),
-  pitch: z.string(),
-  sourceIds: z.array(z.number().int()).default([]),
-});
-
 /** A shareable "diagnostic readout" stat, e.g. { label: "AI Invasion Risk", value: "89%" }. */
 export const PlayfulStatSchema = z.object({
   label: z.string(),
@@ -100,16 +87,17 @@ export const ScanReportSchema = z.object({
   /** Composite 0–100. Recomputed server-side from sub-scores for explainability. */
   opportunityScore: z.number().min(0).max(100),
   snapshot: z.string(),
-  bottlenecks: z.array(EvidenceSchema).default([]),
   softwareEcosystem: z.object({
     summary: z.string(),
     vendors: z.array(VendorSchema).default([]),
   }),
-  frictionSignals: z.array(EvidenceSchema).default([]),
-  aiOpportunities: z.array(OpportunitySchema).default([]),
+  bottlenecks: z.array(EvidenceSchema).default([]),
   underservedNiches: z.array(EvidenceSchema).default([]),
+  /** A dense, evidence-packed paragraph laying out the actionable opportunity thesis. */
+  opportunityThesis: z.string(),
   adjacentMarkets: z.array(EvidenceSchema).default([]),
-  startupConcepts: z.array(StartupConceptSchema).default([]),
+  /** Clear, unambiguous next steps a founder should take. */
+  nextSteps: z.array(EvidenceSchema).default([]),
   playfulStats: z.array(PlayfulStatSchema).default([]),
   sources: z.array(SourceSchema).default([]),
 });

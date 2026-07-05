@@ -58,13 +58,12 @@ export function renderCorpus(sources: ScrapedSource[]): string {
  */
 export const REPORT_SECTIONS: string[] = [
   "Industry Snapshot",
-  "Detected Bottlenecks",
   "Current Software Ecosystem",
-  "Signals of Friction",
-  "Potential AI Opportunities",
+  "Bottlenecks",
   "Underserved Niches",
+  "Opportunity Thesis",
   "Adjacent Markets",
-  "Example Startup Concepts",
+  "Next Steps",
 ];
 
 /** The system prompt: role + hard rules. Kept transparent and short. */
@@ -97,32 +96,53 @@ export function buildPrompt(industry: string, sources: ScrapedSource[]): string 
 
   return `INDUSTRY: ${industry}
 
-SCORE DEFINITIONS (each 0–10, with evidence citing [id]s):
+SCORE DEFINITIONS (each 0–10, with a one-sentence reason — keep it brief, the report body carries the detail):
 ${defs}
 
 Produce a JSON object with EXACTLY these fields:
 {
   "industry": string,
   "scores": {
-    "pain": { "value": 0-10, "label": short word, "evidence": [{ "text": string, "sourceIds": [int] }] },
+    "pain": { "value": 0-10, "label": short word, "reason": one sentence },
     "softwareMaturity": {...}, "laborScarcity": {...}, "aiSuitability": {...}, "budgetSignal": {...}
   },
-  "snapshot": string,                 // 2-3 sentence "Industry Snapshot"
-  "bottlenecks": [{ "text", "sourceIds" }],        // Detected Bottlenecks
-  "softwareEcosystem": { "summary": string, "vendors": [{ "name", "note", "sourceIds" }] },
-  "frictionSignals": [{ "text", "sourceIds" }],    // Signals of Friction (Excel, manual review, etc.)
-  "aiOpportunities": [{ "title", "why", "sourceIds" }],
-  "underservedNiches": [{ "text", "sourceIds" }],
+  "snapshot": string,                 // 2-3 sentence "Industry Snapshot" — high-level lay of the land
+  "softwareEcosystem": {
+    "summary": string,                // 1-2 sentences on the status of current tooling
+    "vendors": [{ "name", "note", "sourceIds" }]
+  },
+  "bottlenecks": [{ "text", "sourceIds" }],          // Structural bottlenecks (NOT friction/complaints — root causes)
+  "underservedNiches": [{ "text", "sourceIds" }],    // Segments or workflows nobody is solving well
+  "opportunityThesis": string,        // SEE SPECIAL INSTRUCTIONS BELOW
   "adjacentMarkets": [{ "text", "sourceIds" }],
-  "startupConcepts": [{ "name", "pitch", "sourceIds" }],   // 3-5 playful, concrete AI-native startup ideas
-  "playfulStats": [{ "label", "value" }]           // e.g. { "label": "Excel Dependency", "value": "Severe" }
+  "nextSteps": [{ "text", "sourceIds" }],            // SEE SPECIAL INSTRUCTIONS BELOW
+  "playfulStats": [{ "label", "value" }]
 }
 
-CRITICAL — every "text", "why", "note", and "evidence" string MUST include direct quotes pulled \
-verbatim from the sources in quotation marks, with the source [id] immediately after. Build each \
-item as a specific thesis supported by concrete details (names, numbers, exact phrases from real \
-people/companies), NOT a generic summary. The reader should encounter real voices and hard data, \
-not paraphrased abstractions.
+SECTION INSTRUCTIONS:
+
+- "bottlenecks": Structural root causes that create opportunity — regulatory, workflow, technical, \
+or labor bottlenecks. NOT surface-level friction or complaints (those are symptoms). 3-5 items.
+
+- "opportunityThesis": A SINGLE DENSE PARAGRAPH (not a list) that is essentially a one-paragraph \
+pitch a founder can immediately run with. It must: (1) explicitly tie the bottlenecks above to \
+what's needed, (2) name specific potential solutions, (3) explain why NOW is the moment, and \
+(4) cite sources throughout with [id]s. This should read like a VC memo paragraph — packed with \
+evidence, specific, and actionable. Think: "Here's exactly what to build and why it will work."
+
+- "nextSteps": Extremely clear, unambiguous, actionable instructions for what a founder should do \
+RIGHT NOW. Not vague advice — specific actions: assumptions to test, discovery interviews to \
+conduct (with whom), what MVP to build, what data to gather, what to validate first. 4-6 items.
+
+CRITICAL — every "text", "note", and the "opportunityThesis" string MUST include direct quotes \
+pulled verbatim from the sources in quotation marks, with the source [id] immediately after. Build \
+each item as a specific thesis supported by concrete details (names, numbers, exact phrases from \
+real people/companies), NOT a generic summary. The reader should encounter real voices and hard \
+data, not paraphrased abstractions.
+
+Minimize redundancy between sections. Bottlenecks describe the problems. Underserved niches \
+describe who's underserved. The opportunity thesis synthesizes both into what to build and why. \
+Next steps say exactly how to start. Each section should add new information, not repeat.
 
 Aim for 3-6 items in each list. Every item's sourceIds MUST reference the sources below.
 

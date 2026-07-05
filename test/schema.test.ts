@@ -5,20 +5,19 @@ import { LlmReportSchema, ScanReportSchema } from "@/lib/schema";
 const validLlm = {
   industry: "test industry",
   scores: {
-    pain: { value: 7, label: "High", evidence: [{ text: "many complaints", sourceIds: [1] }] },
-    softwareMaturity: { value: 3, label: "Legacy", evidence: [] },
-    laborScarcity: { value: 6, label: "Tight", evidence: [] },
-    aiSuitability: { value: 8, label: "Ripe", evidence: [] },
-    budgetSignal: { value: 5, label: "Some", evidence: [] },
+    pain: { value: 7, label: "High", reason: "many complaints across forums" },
+    softwareMaturity: { value: 3, label: "Legacy", reason: "mostly pre-2010 tools" },
+    laborScarcity: { value: 6, label: "Tight", reason: "open roles outnumber candidates" },
+    aiSuitability: { value: 8, label: "Ripe", reason: "repetitive manual workflows" },
+    budgetSignal: { value: 5, label: "Some", reason: "mid-market deal sizes" },
   },
   snapshot: "A snapshot.",
-  bottlenecks: [{ text: "manual review", sourceIds: [2] }],
   softwareEcosystem: { summary: "legacy vendors", vendors: [{ name: "Acme", note: "old", sourceIds: [1] }] },
-  frictionSignals: [{ text: "Excel everywhere", sourceIds: [1] }],
-  aiOpportunities: [{ title: "auto-triage", why: "manual today", sourceIds: [2] }],
+  bottlenecks: [{ text: "manual review", sourceIds: [2] }],
   underservedNiches: [{ text: "rural ops", sourceIds: [] }],
+  opportunityThesis: "There is a clear opportunity to build X because Y.",
   adjacentMarkets: [{ text: "logistics", sourceIds: [] }],
-  startupConcepts: [{ name: "TriageAI", pitch: "automate it", sourceIds: [2] }],
+  nextSteps: [{ text: "Interview 10 coordinators to validate pain", sourceIds: [] }],
   playfulStats: [{ label: "Excel Dependency", value: "Severe" }],
 };
 
@@ -37,9 +36,10 @@ describe("LlmReportSchema", () => {
     expect(LlmReportSchema.safeParse(bad).success).toBe(false);
   });
 
-  it("defaults empty evidence arrays", () => {
-    const parsed = LlmReportSchema.parse(validLlm);
-    expect(Array.isArray(parsed.scores.softwareMaturity.evidence)).toBe(true);
+  it("defaults empty reason string", () => {
+    const input = { ...validLlm, scores: { ...validLlm.scores, softwareMaturity: { value: 3, label: "Legacy" } } };
+    const parsed = LlmReportSchema.parse(input);
+    expect(parsed.scores.softwareMaturity.reason).toBe("");
   });
 });
 

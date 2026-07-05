@@ -20,14 +20,16 @@ import type { ScanState } from "@/lib/useScanStream";
 import { fmtMs } from "@/lib/format";
 
 const PHASES: { key: string; label: string }[] = [
+  { key: "adapt", label: "Adapt" },
   { key: "intents", label: "Intents" },
   { key: "search", label: "Search" },
+  { key: "triage", label: "Triage" },
   { key: "scrape", label: "Scrape" },
   { key: "analyze", label: "Analyze" },
 ];
 
 /** Order phases so "past" ones read as complete in the rail. */
-const PHASE_ORDER = ["idle", "intents", "search", "scrape", "analyze", "done"];
+const PHASE_ORDER = ["idle", "adapt", "intents", "search", "triage", "scrape", "analyze", "done"];
 
 /** Glyph + label for each scrape state. Distinguishes blocked/skipped/empty so the path is legible. */
 function scrapeGlyph(scrape: string): { char: string; cls: string; label: string } {
@@ -136,7 +138,9 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
         </div>
         <div className="nums flex flex-wrap items-baseline justify-end gap-x-3 gap-y-0.5 text-xs text-mute">
           {/* Per-phase latency — finalized numbers appear as each phase completes. */}
+          {state.timing.adaptMs != null && <span>adapt {fmtMs(state.timing.adaptMs)}</span>}
           {state.timing.searchMs != null && <span>search {fmtMs(state.timing.searchMs)}</span>}
+          {state.timing.triageMs != null && <span>triage {fmtMs(state.timing.triageMs)}</span>}
           {state.timing.scrapeMs != null && <span>scrape {fmtMs(state.timing.scrapeMs)}</span>}
           {settled > 0 && (
             <span>
@@ -162,7 +166,16 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
       <div className="grid gap-3 md:grid-cols-2">
         {/* Intents grid */}
         <div className="panel p-4">
-          <div className="eyebrow mb-3">Search Intents</div>
+          <div className="eyebrow mb-3 flex items-center gap-2">
+            Search Intents
+            {state.intents.length > 0 && (
+              <span className={`rounded px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider ${
+                state.intentsAdapted ? "bg-accent/15 text-accent" : "bg-panel2 text-mute"
+              }`}>
+                {state.intentsAdapted ? "adapted" : "static"}
+              </span>
+            )}
+          </div>
           <ul className="space-y-1.5">
             {state.intents.map((intent) => (
               <li key={intent.label} className="font-mono text-[13px]">
@@ -211,13 +224,22 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
                 const g = scrapeGlyph(s.scrape);
                 const dim = s.scrape === "skipped" || s.scrape === "blocked" || s.scrape === "empty";
                 return (
-                  <li key={s.id} className="flex items-center gap-2 font-mono text-[12px]" title={g.label}>
+                  <li key={s.id} className="flex items-center gap-2 font-mono text-[12px]" title={s.reason ?? g.label}>
                     <span className={g.cls}>{g.char}</span>
                     <span className="nums w-6 shrink-0 text-mute">[{s.id}]</span>
+                    {s.relevanceScore != null && (
+                      <span
+                        className={`nums w-5 shrink-0 text-center text-[10px] font-semibold ${
+                          s.relevanceScore >= 7 ? "text-accent" : s.relevanceScore >= 4 ? "text-fg/60" : "text-danger/70"
+                        }`}
+                        title={s.reason ?? ""}
+                      >
+                        {s.relevanceScore}
+                      </span>
+                    )}
                     <span className={`flex-1 truncate ${dim ? "text-mute line-through/0" : "text-fg/80"}`} title={s.title}>
                       {s.domain}
                     </span>
-                    {/* Per-source latency once settled; the intent tag otherwise. */}
                     {s.scrape === "ok" ? (
                       <span className="nums shrink-0 text-[10px] text-mute/70">{fmtMs(s.ms)}</span>
                     ) : dim ? (

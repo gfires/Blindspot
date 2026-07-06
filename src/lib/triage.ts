@@ -20,12 +20,13 @@ import { z } from "zod";
 import { makeOpenAI, REPORT_SECTIONS } from "./analyze";
 import { buildIntents, normalizeIndustry, type Intent } from "./intents";
 import { clamp, domainOf } from "./format";
+import { TRIAGE_MODEL, SEARCH_INTENTS } from "./params";
 import type { Source } from "./schema";
 import type { TokenUsage } from "./events";
 
 /** The triage/adaptation model — cheap and fast. Overridable for testing the fallback path. */
 export function triageModel(): string {
-  return process.env.SCAN_TRIAGE_MODEL ?? "gpt-4o-mini";
+  return TRIAGE_MODEL;
 }
 
 /** A deduped search hit awaiting triage. `intents` = every intent whose search surfaced this URL. */
@@ -59,7 +60,7 @@ const IntentsSchema = z.object({
  */
 export async function makeIntents(
   rawIndustry: string,
-  count = Number(process.env.SCAN_INTENTS ?? 8),
+  count = SEARCH_INTENTS,
 ): Promise<{ intents: Intent[]; adapted: boolean; usage?: TokenUsage }> {
   const industry = normalizeIndustry(rawIndustry);
   const fallback = { intents: buildIntents(industry).slice(0, count), adapted: false };

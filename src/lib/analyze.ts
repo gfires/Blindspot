@@ -15,6 +15,7 @@ import type { ScrapedSource } from "./firecrawl";
 import type { TokenUsage } from "./events";
 import { opportunityScore } from "./scoring";
 import { titleCase } from "./format";
+import { ANALYSIS_MODEL } from "./params";
 
 /** Human + model-facing definitions of each 0–10 dimension. Keep in sync with schema.Scores. */
 export const SCORE_DEFINITIONS: { key: string; name: string; definition: string }[] = [
@@ -26,7 +27,7 @@ export const SCORE_DEFINITIONS: { key: string; name: string; definition: string 
 ];
 
 function config() {
-  return { model: process.env.OPENAI_MODEL ?? "gpt-4o" };
+  return { model: ANALYSIS_MODEL };
 }
 
 /** The model name in use — exported so the route can surface it to the UI. */

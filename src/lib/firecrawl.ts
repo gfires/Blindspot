@@ -26,29 +26,9 @@ import { domainOf, truncate } from "./format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "./blocklist";
 import { getCache, setCache } from "./scrape-cache";
 import { getSearchCache, setSearchCache } from "./search-cache";
+import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR } from "./params";
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "./triage";
 
-/** Per-page markdown budget (chars). Keeps the LLM prompt within token limits. */
-const MAX_CHARS_PER_PAGE = 4500;
-
-/**
- * Per-page scrape timeout (ms). This is per REQUEST, not the whole phase.
- *
- * WHY 20s: pages that take 1–5s to scrape in isolation balloon to 8–15s when many scrape
- * requests contend for Firecrawl bandwidth at once. Measured directly (see git history / the
- * investigation): firing all sources simultaneously pushed healthy pages past a 15s timeout,
- * causing false failures. We solve the ROOT cause with bounded concurrency (SCRAPE_CONCURRENCY
- * below) and keep this timeout as a safety net for genuinely hung pages.
- */
-const SCRAPE_TIMEOUT_MS = 20_000;
-
-/**
- * Max simultaneous scrape requests. Bounded so each request gets enough Firecrawl bandwidth to
- * finish in its natural 2–5s instead of collapsing under congestion. 6 keeps the scrape phase
- * fast (~5 batches of 28 sources) while avoiding the timeout-inducing pile-up. Sites that
- * hard-block scrapers (Reddit/LinkedIn/Indeed → 403) still fail; that's correct and expected.
- */
-const SCRAPE_CONCURRENCY = 6;
 
 /** A search hit before it's promoted to a citable Source. */
 interface SearchHit {
@@ -63,14 +43,6 @@ export interface ScrapedSource extends Source {
   content: string;
 }
 
-/** Read tuning knobs from env with sensible defaults. */
-function config() {
-  return {
-    resultsPerIntent: Number(process.env.SCAN_RESULTS_PER_INTENT ?? 8),
-    maxScrape: Number(process.env.SCAN_MAX_SCRAPE ?? 22),
-    quotaFloor: Number(process.env.SCAN_QUOTA_FLOOR ?? 2),
-  };
-}
 
 /** Construct the Firecrawl client. Throws a clear error if the key is missing. */
 export function makeFirecrawl(): FirecrawlApp {
@@ -93,7 +65,7 @@ async function searchAllIntents(
   onEvent: (e: ScanEvent) => void,
   now: Clock,
 ): Promise<SearchHit[]> {
-  const { resultsPerIntent } = config();
+  const resultsPerIntent = RESULTS_PER_INTENT;
 
   const perIntent = await Promise.all(
     intents.map(async (intent) => {
@@ -308,7 +280,8 @@ export async function explore(
   nowIso: string = new Date().toISOString(),
 ): Promise<{ sources: Source[]; scraped: ScrapedSource[]; searchMs: number; scrapeMs: number; firecrawlCalls: number }> {
   const app = makeFirecrawl();
-  const { maxScrape, quotaFloor } = config();
+  const maxScrape = MAX_SCRAPE;
+  const quotaFloor = QUOTA_FLOOR;
 
   // --- (a) Adapt intents ---
   const adaptStart = now();

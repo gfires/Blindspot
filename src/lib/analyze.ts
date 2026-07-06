@@ -67,7 +67,7 @@ export const REPORT_SECTIONS: string[] = [
 ];
 
 /** The system prompt: role + hard rules. Kept transparent and short. */
-export const SYSTEM_PROMPT = `You are Opportunity MRI, a playful but sharp industry-diagnostics engine. \
+export const SYSTEM_PROMPT = `You are Blindspot, a sharp industry-diagnostics engine. \
 You read raw web sources about an industry and infer where the structural inefficiencies, labor \
 shortages, software gaps, and AI-native business opportunities are.
 

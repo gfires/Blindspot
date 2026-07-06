@@ -127,7 +127,7 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
   const phase = phaseFor(ev.type);
   switch (ev.type) {
     case "start":
-      return { ...state, phase, industry: ev.industry, trace: [`Initializing MRI scan for “${ev.industry}”…`] };
+      return { ...state, phase, industry: ev.industry, trace: [`Initializing Blindspot scan for “${ev.industry}”…`] };
 
     case "adapt:begin":
       return { ...state, phase, trace: [...state.trace, `Designing search intents for this industry (${ev.model})…`] };

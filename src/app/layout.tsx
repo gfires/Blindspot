@@ -10,9 +10,9 @@ const mono = JetBrains_Mono({ subsets: ["latin"], variable: "--font-mono", displ
 const sans = Inter({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
 
 export const metadata: Metadata = {
-  title: "Opportunity MRI — scan any industry for hidden opportunity",
+  title: "Blindspot — scan any industry for hidden opportunity",
   description:
-    "Opportunity MRI scans an industry for structural inefficiencies, labor shortages, software gaps, and AI-native business opportunities. A playful exploration engine — scores are heuristic.",
+    "Blindspot scans any industry for structural bottlenecks, software gaps, and founder-ready opportunities. Evidence-backed scores, actionable thesis, concrete next steps.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -4,13 +4,12 @@
  * as a clean, selectable-text PDF document.
  */
 import { jsPDF } from "jspdf";
-import type { ScanReport, Evidence, Source } from "./schema";
+import type { ScanReport, Evidence } from "./schema";
 import { SCORE_DEFINITIONS } from "./analyze";
 
 const PAGE_W = 210;
 const MARGIN = 20;
 const CONTENT_W = PAGE_W - MARGIN * 2;
-const LINE_H = 5.5;
 const PAGE_BOTTOM = 280;
 
 function ensureSpace(doc: jsPDF, y: number, needed: number): number {
@@ -98,7 +97,7 @@ export function exportReportPdf(report: ScanReport): void {
   doc.setFontSize(22);
   doc.setFont("helvetica", "bold");
   doc.setTextColor(30, 30, 30);
-  doc.text(`Opportunity MRI: ${report.industry}`, MARGIN, y);
+  doc.text(`Blindspot: ${report.industry}`, MARGIN, y);
   y += 8;
 
   // Date
@@ -208,5 +207,5 @@ export function exportReportPdf(report: ScanReport): void {
   }
 
   const slug = report.industry.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+$/, "");
-  doc.save(`opportunity-mri-${slug}.pdf`);
+  doc.save(`blindspot-${slug}.pdf`);
 }

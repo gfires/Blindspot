@@ -11,7 +11,7 @@
  *   │ > running log of everything happening, newest last         │
  *   └────────────────────────────────────────────────────────────┘
  *
- * A sweeping scan-line overlays the whole thing to sell the "MRI" motif.
+ * A sweeping scan-line overlays the whole thing during the live scan.
  */
 "use client";
 
@@ -76,7 +76,7 @@ function useElapsed(running: boolean, resetKey: string): number {
 /**
  * @param state  the reduced scan state
  * @param done   true when rendered as a static, post-scan record (inside the report). Suppresses
- *               the live-only affordances (the MRI sweep animation) but keeps the full search
+ *               the live-only affordances (the sweep animation) but keeps the full search
  *               path, scrape statuses, timings, and prompt so the user can inspect the path after
  *               analysis completes. The elapsed clock freezes on its own (state.running is false).
  */
@@ -99,7 +99,7 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
 
   return (
     <div className="relative mx-auto w-full max-w-4xl overflow-hidden">
-      {/* Sweeping MRI scan line — live only; a finished trace is static. */}
+      {/* Sweeping scan line — live only; a finished trace is static. */}
       {!done && (
         <div className="pointer-events-none absolute inset-x-0 top-0 h-full">
           <div className="h-16 w-full animate-sweep bg-gradient-to-b from-transparent via-accent/10 to-transparent" />

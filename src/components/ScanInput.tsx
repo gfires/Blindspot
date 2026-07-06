@@ -21,11 +21,11 @@ export function ScanInput({ onRun, disabled }: { onRun: (industry: string) => vo
     <div className="mx-auto w-full max-w-2xl text-center">
       <div className="eyebrow mb-4">Industry diagnostics · scores are heuristic</div>
       <h1 className="text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
-        Opportunity <span className="text-accent">MRI</span>
+        Blind<span className="text-accent">spot</span>
       </h1>
       <p className="mx-auto mt-3 max-w-md text-balance text-sm text-mute">
-        Scan any industry for structural inefficiencies, labor shortages, software gaps, and
-        AI-native business openings. See the hidden shape of a market.
+        Scan any industry for structural bottlenecks, software gaps, and founder-ready
+        opportunities. See what the market isn't seeing.
       </p>
 
       <div className="mt-8 flex items-stretch gap-2">

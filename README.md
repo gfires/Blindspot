@@ -1,17 +1,14 @@
-# Opportunity MRI
+# Blindspot
 
-> Scan any industry for structural inefficiencies, labor shortages, software gaps, and AI-native
-> business opportunities. A playful exploration engine that makes you feel like you're seeing the
-> hidden shape of a market.
+> Scan any industry for structural bottlenecks, software gaps, and founder-ready opportunities.
+> Type an industry, get an evidence-backed report with scores, an actionable thesis, and
+> concrete next steps — all grounded in real sources with direct quotes.
 
 Type an industry — `college athletics`, `construction permitting`, `insurance claims`,
-`industrial ergonomics` — and watch Opportunity MRI fan out across the web, read the results live,
-and render a Bloomberg-terminal-style diagnostic: pain scores, software maturity, labor scarcity,
-AI opportunities, underserved niches, and a set of tongue-in-cheek stats. **Every score and claim
-cites its sources with direct quotes.**
-
-This is a **fun exploration tool**, not lead-gen and not a research assistant. **All scores are
-heuristic.**
+`industrial ergonomics` — and watch the scanner fan out across the web, triage the results,
+and produce a diagnostic report: pain scores, software maturity, founder accessibility,
+AI suitability, budget signal, an opportunity thesis, and clear next steps. **Every claim
+cites its sources with direct quotes.** Export the full report as a PDF.
 
 ---
 
@@ -44,7 +41,7 @@ for analysis), all streamed live.
 industry
    │
    ▼  ADAPT — makeIntents()                            src/lib/triage.ts
-   │  gpt-4o-mini designs 10 search intents tailored to this industry, told the 8
+   │  gpt-4o-mini designs 10 search intents tailored to this industry, told the 7
    │  report sections so the intents aim at evidence the report actually needs.
    │  Fallback: static templates from intents.ts (if the LLM call fails).
    │
@@ -52,11 +49,11 @@ industry
    │  10 intents × 8 results each, in parallel via Firecrawl /search = up to 80 raw hits.
    │  Each hit tagged with the intent(s) that surfaced it.
    │
-   ▼  DEDUPE — dedupeCandidates()                      src/lib/firecrawl.ts
+   ▼  DEDUPE + FILTER — dedupeCandidates()             src/lib/firecrawl.ts
    │  Collapse to ~50–70 unique URLs, merging intent tags.
    │  A page found by 3 intents carries all 3 tags — centrality signal for triage.
-   │  Domains on the blocklist (data/blocklist.json) are removed here, before triage,
-   │  so they never waste LLM attention or scrape slots.
+   │  Domains on the blocklist (data/blocklist.json) and PDF URLs are removed here,
+   │  before triage, so they never waste LLM attention or scrape credits.
    │
    ▼  TRIAGE — scoreCandidates()                       src/lib/triage.ts
    │  ONE gpt-4o-mini call sees all candidates (title, domain, snippet, intent tags)
@@ -73,16 +70,18 @@ industry
    │
    ▼  SCRAPE — scrapeSources()                         src/lib/firecrawl.ts
    │  Bounded concurrency (6 at a time) via Firecrawl /scrape.
+   │  PDF URLs are skipped (safety net). PDF parsing is disabled on the API call.
    │  Domains that hard-block (403/etc.) are auto-added to the blocklist for future scans.
    │
    ▼  ANALYZE — callLLM()                              src/lib/analyze.ts
-   │  gpt-4o reads the full scraped corpus. Prompt demands direct quotes and specific
-   │  evidence — the report should read like a briefing with real voices, not a summary.
-   │  JSON output validated by zod; one repair retry on invalid JSON, then a clear error.
+   │  gpt-4o (temperature 0.2) reads the full scraped corpus. Prompt demands direct
+   │  quotes and specific evidence — the report should read like a briefing with real
+   │  voices, not a summary. JSON output validated by zod; one repair retry on invalid
+   │  JSON, then a clear error.
    │
    ▼  ASSEMBLE — assembleReport()                      src/lib/analyze.ts + scoring.ts
    │  Server computes the 0–100 Opportunity Score deterministically from sub-scores,
-   │  guarantees baseline playful stats, attaches sources + timestamp.
+   │  attaches sources + timestamp.
    │
    ▼  STREAM — Server-Sent Events                      src/app/api/scan/route.ts
    Every step streamed live to the browser → the exploration visualization
@@ -110,13 +109,23 @@ The scan runs inside a **streaming route handler** (`src/app/api/scan/route.ts`)
 event for every step — intents adapting, each search firing/returning, triage scoring, each page
 being scraped, the analyze phase — as Server-Sent Events. The client (`src/lib/useScanStream.ts`)
 folds those into UI state that `ScanProgress` renders: you watch intents fan out, relevance scores
-appear, sources stream in, and pages get read, under a sweeping "MRI" scan-line.
+appear, sources stream in, and pages get read, under a sweeping scan-line.
 
 The phase rail shows six stages: **Adapt → Intents → Search → Triage → Scrape → Analyze**.
 Each source in the live view shows its triage score (color-coded) with the reason on hover.
 The intents panel labels whether they were "adapted" (LLM-generated) or "static" (fallback).
 
 ### The report
+
+The report has seven sections, each adding distinct information with no redundancy:
+
+1. **Industry Snapshot** — 2–3 sentence lay of the land
+2. **Current Software Ecosystem** — summary of tooling status + named vendors
+3. **Bottlenecks** — structural root causes (regulatory, workflow, technical), not surface complaints
+4. **Underserved Niches** — segments or workflows nobody is solving well
+5. **Opportunity Thesis** — a dense, evidence-packed paragraph tying bottlenecks to specific solutions a founder can run with
+6. **Adjacent Markets** — neighboring industries with crossover potential
+7. **Next Steps** — unambiguous, actionable instructions: assumptions to test, who to interview, what to build first
 
 Every evidence item uses **direct quotes** pulled from the scraped sources — the reader
 encounters real voices, specific numbers, and named systems, not generic paraphrases. Citations
@@ -127,17 +136,44 @@ selected, so you can see exactly why each page was included.
 
 ### Scoring
 
-The **five sub-scores** (Pain, Software Maturity, Labor Scarcity, AI Suitability, Budget Signal)
-come from the LLM, each grounded in cited sources. The **headline 0–100 Opportunity Score** is
-computed deterministically in `src/lib/scoring.ts` from those sub-scores — so the big number is
-explainable, not a black box. Software maturity is *inverted* (mature software → less opportunity).
+The **five sub-scores** come from the LLM, each with a brief one-sentence rationale:
+
+| Score | What it measures |
+| --- | --- |
+| **Pain** | Frustration, friction, unmet need (10 = severe) |
+| **Software Maturity** | How modern the existing tools are (10 = mature SaaS everywhere) |
+| **Founder Accessibility** | How easy it is for an outsider founder to break in (10 = very accessible) |
+| **AI Suitability** | How well manual work maps to what AI can automate today (10 = highly automatable) |
+| **Budget Signal** | Evidence that buyers have money and will pay (10 = strong budgets) |
+
+The **headline 0–100 Opportunity Score** is computed deterministically in `src/lib/scoring.ts`
+from those sub-scores using equal-ish weights (pain 25%, the rest 15–20% each). Software maturity
+is *inverted* (mature software → less opportunity). The formula is transparent so scores are
+comparable across scans.
+
+### PDF export
+
+The report can be exported as a PDF via a client-side button (no server round-trip). The PDF
+includes the headline score, all five sub-scores with visual bars, every report section with
+inline citations, and the full source appendix with clickable URLs. Built with jsPDF.
+
+### Credit management
+
+Firecrawl credits scale with extracted content size. To keep costs predictable:
+
+- **PDF URLs are filtered out before triage** — they can burn 10–100x credits for content that
+  rarely adds value over the search snippet.
+- **PDF URLs are also skipped at scrape time** as a safety net.
+- **`parsePDF: false`** is set on every scrape call so Firecrawl won't extract PDFs even if
+  the URL doesn't end in `.pdf`.
+- Each scrape uses `onlyMainContent: true` and content is truncated to 3500 chars.
 
 ### Blocklist
 
 `data/blocklist.json` is the app's only persistent state. When a scrape fails with a hard
 anti-scraping block (401/403/429/451), the domain is recorded so future scans skip it
-proactively. Blocked domains are filtered out **before triage** so they don't waste scrape slots
-or LLM scoring attention. The UI shows skipped domains with a reason.
+proactively. Blocked domains and PDF URLs are filtered out **before triage** so they don't
+waste scrape slots or LLM scoring attention. The UI shows skipped domains with a reason.
 
 ---
 
@@ -178,15 +214,16 @@ src/
   lib/
     triage.ts             LLM intelligence layer: adapt intents + triage scoring + selection
     intents.ts            static intent templates (fallback for adaptation)
-    firecrawl.ts          explore(): search + dedupe + scrape (emits progress events)
+    firecrawl.ts          explore(): search + dedupe + filter + scrape (emits progress events)
     analyze.ts            analysis prompt + LLM call + report assembly
-    scoring.ts            deterministic 0–100 score + playful stats
+    scoring.ts            deterministic 0–100 score from sub-scores
+    exportPdf.ts          client-side PDF export of the full report
     schema.ts             zod schemas / types — the source of truth for report shape
     events.ts             SSE event union + TokenUsage type (server↔client contract)
     useScanStream.ts      client hook: consume SSE, reduce into UI state (incl. usage tracking)
     blocklist.ts          persistent scrape-hostile domain list
     format.ts             small pure helpers
-  components/             ScanInput, ScanProgress, ReportView, Gauge, OpportunityMeter, …
+  components/             ScanInput, ScanProgress, ReportView, Gauge, OpportunityMeter, ...
 test/                     vitest unit tests (intents, scoring, schema, blocklist, triage selection)
 data/
   blocklist.json          running list of domains that block scrapers
@@ -218,6 +255,6 @@ Firecrawl/OpenAI calls are live and one-shot, so they're covered by manual end-t
 - ~28 scraped pages (truncated per page) fit the token budget and the ~30–60s target.
 - `gpt-4o` + JSON mode + zod validation is reliable; there's one repair retry then a clear error.
 - `gpt-4o-mini` is fast enough for adaptation (~1–2s) and triage (~2–4s on ~60 candidates).
-- Blocklist filtering before triage means all 28 scrape slots go to actually-scrapable pages.
-- **Scores are heuristic and playful.** This is a provocation to explore an industry, not a
-  verdict on it.
+- Blocklist + PDF filtering before triage means all 28 scrape slots go to scrapable HTML pages.
+- Sub-scores are LLM-assigned heuristics; the composite score is a deterministic, transparent
+  formula on top of them.

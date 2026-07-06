@@ -30,7 +30,7 @@ export function ReportView({
       <div className="panel flex flex-col items-center gap-6 p-6 sm:flex-row sm:items-center animate-rise">
         <OpportunityMeter score={report.opportunityScore} />
         <div className="flex-1 text-center sm:text-left">
-          <div className="eyebrow">Opportunity MRI · complete</div>
+          <div className="eyebrow">Blindspot · complete</div>
           <h1 className="mt-1 text-3xl font-semibold tracking-tight">{report.industry}</h1>
           <p className="mt-2 text-sm text-fg/85">{report.snapshot}</p>
         </div>
@@ -124,7 +124,7 @@ export function ReportView({
           <UsagePill usage={scan.usage} />
         </summary>
         <p className="mt-3 leading-relaxed">
-          Opportunity MRI generated {report.sources.length ? "a set of" : "no"} search intents,
+          Blindspot generated {report.sources.length ? "a set of" : "no"} search intents,
           searched the public web via Firecrawl, scraped the most relevant pages, and asked an LLM
           to infer the five diagnostic scores below — each grounded in the cited sources. The
           headline Opportunity Score (0–100) is computed deterministically from the sub-scores

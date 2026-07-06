@@ -176,6 +176,11 @@ async function scrapeOne(
     return { ...src, content: "" };
   }
 
+  if (/\.pdf(\?|#|$)/i.test(src.url)) {
+    onEvent({ type: "scrape:done", id: src.id, domain: src.domain, status: "skipped", chars: 0, ms: 0 });
+    return { ...src, content: "" };
+  }
+
   onEvent({ type: "scrape:begin", id: src.id, domain: src.domain });
   const t0 = now();
   try {

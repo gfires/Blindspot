@@ -96,6 +96,10 @@ export function buildPrompt(industry: string, sources: ScrapedSource[]): string 
 
   return `INDUSTRY: ${industry}
 
+PERSPECTIVE: The user wants to BUILD in this space — they are a founder or investor scanning for \
+opportunities, gaps, and unmet needs. Diagnose where the opportunities are to create something \
+new, not how the industry works for an end consumer or operator.
+
 SCORE DEFINITIONS (each 0–10, with a one-sentence reason — keep it brief, the report body carries the detail):
 ${defs}
 

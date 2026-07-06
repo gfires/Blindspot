@@ -59,7 +59,7 @@ const IntentsSchema = z.object({
  */
 export async function makeIntents(
   rawIndustry: string,
-  count = Number(process.env.SCAN_INTENTS ?? 10),
+  count = Number(process.env.SCAN_INTENTS ?? 8),
 ): Promise<{ intents: Intent[]; adapted: boolean; usage?: TokenUsage }> {
   const industry = normalizeIndustry(rawIndustry);
   const fallback = { intents: buildIntents(industry).slice(0, count), adapted: false };
@@ -67,7 +67,13 @@ export async function makeIntents(
   try {
     const client = makeOpenAI();
     const model = triageModel();
+    const year = new Date().getFullYear();
     const prompt = `You design web-search queries for an industry-diagnostics report on "${industry}".
+The current year is ${year}. When queries reference a year, use ${year}.
+
+The user wants to BUILD in this space — they're scanning for founder opportunities, gaps, and \
+unmet needs. Focus on practitioners' pain, workflows, existing tools (or lack thereof), and \
+where technology could help — not on how-to guides or consumer-facing content.
 
 The report will contain these sections:
 ${REPORT_SECTIONS.map((s) => `- ${s}`).join("\n")}

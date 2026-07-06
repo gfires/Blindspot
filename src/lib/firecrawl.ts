@@ -25,10 +25,11 @@ import type { Intent } from "./intents";
 import { domainOf, truncate } from "./format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "./blocklist";
 import { getCache, setCache } from "./scrape-cache";
+import { getSearchCache, setSearchCache } from "./search-cache";
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "./triage";
 
 /** Per-page markdown budget (chars). Keeps the LLM prompt within token limits. */
-const MAX_CHARS_PER_PAGE = 5500;
+const MAX_CHARS_PER_PAGE = 4500;
 
 /**
  * Per-page scrape timeout (ms). This is per REQUEST, not the whole phase.
@@ -66,7 +67,7 @@ export interface ScrapedSource extends Source {
 function config() {
   return {
     resultsPerIntent: Number(process.env.SCAN_RESULTS_PER_INTENT ?? 8),
-    maxScrape: Number(process.env.SCAN_MAX_SCRAPE ?? 28),
+    maxScrape: Number(process.env.SCAN_MAX_SCRAPE ?? 22),
     quotaFloor: Number(process.env.SCAN_QUOTA_FLOOR ?? 2),
   };
 }
@@ -99,6 +100,13 @@ async function searchAllIntents(
       onEvent({ type: "search:begin", intent: intent.label });
       const t0 = now();
       try {
+        const cached = await getSearchCache(intent.query);
+        if (cached) {
+          const hits: SearchHit[] = cached.map((d) => ({ ...d, intent: intent.label }));
+          onEvent({ type: "search:done", intent: intent.label, count: hits.length, ms: now() - t0 });
+          return hits;
+        }
+
         const res = await app.search(intent.query, { limit: resultsPerIntent });
         const hits: SearchHit[] = (res.data ?? [])
           .filter((d) => d.url)
@@ -108,6 +116,7 @@ async function searchAllIntents(
             snippet: d.description || d.metadata?.description || "",
             intent: intent.label,
           }));
+        void setSearchCache(intent.query, hits.map(({ url, title, snippet }) => ({ url, title, snippet })));
         onEvent({ type: "search:done", intent: intent.label, count: hits.length, ms: now() - t0 });
         return hits;
       } catch {

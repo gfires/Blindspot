@@ -115,33 +115,47 @@ export function exportReportPdf(report: ScanReport): void {
   doc.text(`Opportunity Score: ${report.opportunityScore}/100`, MARGIN, y);
   y += 10;
 
-  // Sub-scores
-  const colW = CONTENT_W / 2;
+  // Sub-scores — one per row so multi-line reasons don't collide
+  const barW = CONTENT_W * 0.6;
   for (let i = 0; i < SCORE_DEFINITIONS.length; i++) {
     const def = SCORE_DEFINITIONS[i];
     const score = report.scores[def.key as keyof ScanReport["scores"]];
-    const col = i % 2;
-    if (col === 0) y = ensureSpace(doc, y, 18);
-    const x = MARGIN + col * colW;
 
     doc.setFontSize(9);
     doc.setFont("helvetica", "bold");
     doc.setTextColor(60, 60, 60);
-    doc.text(`${def.name}: ${score.value.toFixed(1)}/10`, x, y);
 
-    drawScoreBar(doc, x, y + 2, score.value, colW - 10);
-
+    // Measure reason height first so we can ensureSpace for the whole block
+    let reasonLines: string[] = [];
     if (score.reason) {
+      doc.setFontSize(7.5);
+      reasonLines = doc.splitTextToSize(score.reason, barW) as string[];
+      doc.setFontSize(9);
+    }
+    const blockH = 8 + reasonLines.length * 3.5 + 2;
+    y = ensureSpace(doc, y, blockH);
+
+    doc.setFontSize(9);
+    doc.setFont("helvetica", "bold");
+    doc.setTextColor(60, 60, 60);
+    doc.text(`${def.name}: ${score.value.toFixed(1)}/10`, MARGIN, y);
+
+    drawScoreBar(doc, MARGIN, y + 2, score.value, barW);
+
+    if (reasonLines.length > 0) {
       doc.setFontSize(7.5);
       doc.setFont("helvetica", "normal");
       doc.setTextColor(100, 100, 100);
-      const reasonLines = doc.splitTextToSize(score.reason, colW - 10) as string[];
-      doc.text(reasonLines[0] || "", x, y + 8);
+      let ry = y + 8;
+      for (const line of reasonLines) {
+        doc.text(line, MARGIN, ry);
+        ry += 3.5;
+      }
+      y = ry + 2;
+    } else {
+      y += 10;
     }
-
-    if (col === 1) y += 16;
   }
-  if (SCORE_DEFINITIONS.length % 2 === 1) y += 16;
   y += 2;
 
   // 01 — Industry Snapshot

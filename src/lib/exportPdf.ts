@@ -20,15 +20,20 @@ function ensureSpace(doc: jsPDF, y: number, needed: number): number {
   return y;
 }
 
-function drawScoreBar(doc: jsPDF, x: number, y: number, value: number, width: number) {
+function scoreRgb(v: number): [number, number, number] {
+  if (v >= 7) return [52, 211, 153];   // green
+  if (v >= 5) return [250, 204, 21];   // yellow
+  if (v >= 3) return [251, 146, 60];   // orange
+  return [248, 113, 113];              // red
+}
+
+function drawScoreBar(doc: jsPDF, x: number, y: number, value: number, width: number, inverted = false) {
   const barH = 3;
   doc.setFillColor(230, 230, 230);
   doc.rect(x, y, width, barH, "F");
   const pct = value / 10;
-  const r = value >= 7.5 ? 220 : value >= 5 ? 200 : 56;
-  const g = value >= 7.5 ? 60 : value >= 5 ? 160 : 189;
-  const b = value >= 7.5 ? 60 : value >= 5 ? 40 : 176;
-  doc.setFillColor(r, g, b);
+  const colorValue = inverted ? 10 - value : value;
+  doc.setFillColor(...scoreRgb(colorValue));
   doc.rect(x, y, width * pct, barH, "F");
 }
 
@@ -140,7 +145,7 @@ export function exportReportPdf(report: ScanReport): void {
     doc.setTextColor(60, 60, 60);
     doc.text(`${def.name}: ${score.value.toFixed(1)}/10`, MARGIN, y);
 
-    drawScoreBar(doc, MARGIN, y + 2, score.value, barW);
+    drawScoreBar(doc, MARGIN, y + 2, score.value, barW, def.key === "softwareMaturity");
 
     if (reasonLines.length > 0) {
       doc.setFontSize(7.5);

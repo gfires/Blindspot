@@ -43,6 +43,7 @@ export function ReportView({
             key={d.key}
             name={d.name}
             score={report.scores[d.key as keyof ScanReport["scores"]]}
+            scoreKey={d.key}
           />
         ))}
       </div>
@@ -205,7 +206,7 @@ function UsagePill({ usage }: { usage: UsageSummary }) {
   return (
     <span className="ml-2 inline-flex items-center gap-1.5 normal-case tracking-normal text-mute/70">
       {fmtTokens(total)} tokens · ~${cents < 1 ? cents.toFixed(2) : cents.toFixed(1)}¢
-      {usage.firecrawlCalls > 0 && <> · {usage.firecrawlCalls} API calls</>}
+      {usage.firecrawlCredits > 0 && <> · {usage.firecrawlCredits} Firecrawl credits</>}
     </span>
   );
 }
@@ -225,10 +226,10 @@ function UsageBreakdown({ usage }: { usage: UsageSummary }) {
             </span>
           </div>
         ))}
-        {usage.firecrawlCalls > 0 && (
+        {usage.firecrawlCredits > 0 && (
           <div className="flex items-center justify-between gap-4">
             <span className="text-fg/70">Firecrawl</span>
-            <span className="nums text-mute">{usage.firecrawlCalls} calls</span>
+            <span className="nums text-mute">{usage.firecrawlCredits} credits ({usage.firecrawlCalls} API calls)</span>
           </div>
         )}
         <div className="mt-1 border-t border-line pt-1 flex items-center justify-between gap-4">

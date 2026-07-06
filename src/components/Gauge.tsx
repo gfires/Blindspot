@@ -1,18 +1,24 @@
 /**
  * Gauge — a 0–10 diagnostic sub-score rendered as a labeled bar with a brief rationale.
- * Color ramps from teal (low) → amber → danger (high) so "heat" reads at a glance.
  */
 import type { Score } from "@/lib/schema";
 
-/** Pick a heat color for a 0–10 value. */
-function heatClass(v: number): string {
-  if (v >= 7.5) return "bg-danger";
-  if (v >= 5) return "bg-amber";
-  return "bg-accent";
+/** Pick color for a 0–10 sub-score. */
+function scoreColor(v: number): string {
+  if (v >= 7) return "bg-emerald-400";
+  if (v >= 5) return "bg-yellow-400";
+  if (v >= 3) return "bg-orange-400";
+  return "bg-red-400";
 }
 
-export function Gauge({ name, score }: { name: string; score: Score }) {
+/** For Existing Solution Maturity, high = bad (mature market = less opportunity). Flip the color. */
+function invertedScoreColor(v: number): string {
+  return scoreColor(10 - v);
+}
+
+export function Gauge({ name, score, scoreKey }: { name: string; score: Score; scoreKey?: string }) {
   const pct = Math.round((score.value / 10) * 100);
+  const colorFn = scoreKey === "softwareMaturity" ? invertedScoreColor : scoreColor;
   return (
     <div className="panel p-4">
       <div className="flex items-baseline justify-between">
@@ -24,7 +30,7 @@ export function Gauge({ name, score }: { name: string; score: Score }) {
       </div>
 
       <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-panel2">
-        <div className={`h-full rounded-full ${heatClass(score.value)}`} style={{ width: `${pct}%` }} />
+        <div className={`h-full rounded-full ${colorFn(score.value)}`} style={{ width: `${pct}%` }} />
       </div>
 
       <div className="mt-1 text-xs text-mute">{score.label}</div>

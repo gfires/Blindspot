@@ -67,12 +67,14 @@ export interface Timing {
   totalMs: number | null;
 }
 
-/** Accumulated API usage across the scan — tokens by model + Firecrawl call count. */
+/** Accumulated API usage across the scan — tokens by model + Firecrawl call/credit count. */
 export interface UsageSummary {
   /** Token counts grouped by model (e.g. { "gpt-4o-mini": { prompt: 1200, completion: 400 }, ... }). */
   tokensByModel: Record<string, { prompt: number; completion: number }>;
-  /** Total Firecrawl API calls (searches + scrapes). */
+  /** Total Firecrawl API calls (searches + scrapes, excluding cached). */
   firecrawlCalls: number;
+  /** Total Firecrawl credits consumed (1 per search, 2 per scrape). */
+  firecrawlCredits: number;
 }
 
 /** The full reduced state the UI renders from. */
@@ -108,7 +110,7 @@ const initialState: ScanState = {
   trace: [],
   prompt: null,
   timing: { adaptMs: null, searchMs: null, triageMs: null, scrapeMs: null, analyzeMs: null, totalMs: null },
-  usage: { tokensByModel: {}, firecrawlCalls: 0 },
+  usage: { tokensByModel: {}, firecrawlCalls: 0, firecrawlCredits: 0 },
   report: null,
   error: null,
   running: false,
@@ -250,7 +252,7 @@ export function reduce(state: ScanState, ev: ScanEvent): ScanState {
         running: false,
         report: ev.report,
         timing: { ...state.timing, analyzeMs: ev.analyzeMs, totalMs: ev.totalMs },
-        usage: { ...updated, firecrawlCalls: ev.firecrawlCalls },
+        usage: { ...updated, firecrawlCalls: ev.firecrawlCalls, firecrawlCredits: ev.firecrawlCredits },
         trace: [...state.trace, `Inference done in ${fmtMs(ev.analyzeMs)}. Scan complete in ${fmtMs(ev.totalMs)}.`],
       };
     }

@@ -64,8 +64,9 @@ async function searchAllIntents(
   intents: Intent[],
   onEvent: (e: ScanEvent) => void,
   now: Clock,
-): Promise<SearchHit[]> {
+): Promise<{ hits: SearchHit[]; apiCalls: number }> {
   const resultsPerIntent = RESULTS_PER_INTENT;
+  let apiCalls = 0;
 
   const perIntent = await Promise.all(
     intents.map(async (intent) => {
@@ -79,6 +80,7 @@ async function searchAllIntents(
           return hits;
         }
 
+        apiCalls++;
         const res = await app.search(intent.query, { limit: resultsPerIntent });
         const hits: SearchHit[] = (res.data ?? [])
           .filter((d) => d.url)
@@ -98,7 +100,7 @@ async function searchAllIntents(
     }),
   );
 
-  return perIntent.flat();
+  return { hits: perIntent.flat(), apiCalls };
 }
 
 /**
@@ -236,22 +238,25 @@ async function scrapeSources(
   onEvent: (e: ScanEvent) => void,
   now: Clock,
   nowIso: string,
-): Promise<ScrapedSource[]> {
+): Promise<{ scraped: ScrapedSource[]; apiCalls: number }> {
   const results: ScrapedSource[] = new Array(ranked.length);
-  let next = 0; // shared cursor: the next index no worker has claimed yet
+  let next = 0;
+  let apiCalls = 0;
 
-  // Each worker loops: claim an index, scrape it fully, repeat until the queue is drained.
   const worker = async () => {
     while (true) {
       const i = next++;
       if (i >= ranked.length) return;
-      results[i] = await scrapeOne(app, ranked[i].source, ranked[i].blocked, onEvent, now, nowIso);
+      const src = ranked[i];
+      const isLive = !src.blocked && !/\.pdf(\?|#|$)/i.test(src.source.url) && (await getCache(src.source.url)) === null;
+      results[i] = await scrapeOne(app, src.source, src.blocked, onEvent, now, nowIso);
+      if (isLive) apiCalls++;
     }
   };
 
   const workerCount = Math.min(SCRAPE_CONCURRENCY, ranked.length);
   await Promise.all(Array.from({ length: workerCount }, worker));
-  return results;
+  return { scraped: results, apiCalls };
 }
 
 /**
@@ -278,7 +283,7 @@ export async function explore(
   onEvent: (e: ScanEvent) => void,
   now: Clock = () => Date.now(),
   nowIso: string = new Date().toISOString(),
-): Promise<{ sources: Source[]; scraped: ScrapedSource[]; searchMs: number; scrapeMs: number; firecrawlCalls: number }> {
+): Promise<{ sources: Source[]; scraped: ScrapedSource[]; searchMs: number; scrapeMs: number; firecrawlCalls: number; firecrawlCredits: number }> {
   const app = makeFirecrawl();
   const maxScrape = MAX_SCRAPE;
   const quotaFloor = QUOTA_FLOOR;
@@ -297,11 +302,11 @@ export async function explore(
 
   // --- Search + dedupe (blocklist loads in parallel — it's just a file read) ---
   const searchStart = now();
-  const [hits, blockset] = await Promise.all([
+  const [searchResult, blockset] = await Promise.all([
     searchAllIntents(app, intents, onEvent, now),
     loadBlocklist(),
   ]);
-  const allCandidates = dedupeCandidates(hits);
+  const allCandidates = dedupeCandidates(searchResult.hits);
   const searchMs = now() - searchStart;
   const blocked: Candidate[] = [];
   const candidates: Candidate[] = [];
@@ -330,9 +335,6 @@ export async function explore(
     blocked: false,
   }));
 
-  // Firecrawl API calls: one search per intent + one scrape per source (minus skips).
-  const firecrawlCalls = intents.length + sources.length;
-
   onEvent({
     type: "sources",
     searchMs,
@@ -341,8 +343,12 @@ export async function explore(
 
   // --- Scrape phase (bounded concurrency; skips blocked domains) ---
   const scrapeStart = now();
-  const scraped = await scrapeSources(app, ranked, onEvent, now, nowIso);
+  const { scraped, apiCalls: scrapeApiCalls } = await scrapeSources(app, ranked, onEvent, now, nowIso);
   const scrapeMs = now() - scrapeStart;
 
-  return { sources, scraped, searchMs, scrapeMs, firecrawlCalls };
+  // Credit math: 1 credit per search, 2 per scrape (cached/skipped don't count).
+  const firecrawlCalls = searchResult.apiCalls + scrapeApiCalls;
+  const firecrawlCredits = searchResult.apiCalls * 1 + scrapeApiCalls * 2;
+
+  return { sources, scraped, searchMs, scrapeMs, firecrawlCalls, firecrawlCredits };
 }

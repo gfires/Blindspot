@@ -85,7 +85,7 @@ export type ScanEvent =
    */
   | { type: "analyze:begin"; model: string; systemPrompt: string; userPrompt: string; scrapeMs: number }
   /** Terminal success: the complete report. `totalMs`/`analyzeMs` document end-to-end timing. */
-  | { type: "report"; report: ScanReport; analyzeMs: number; totalMs: number; usage?: TokenUsage; firecrawlCalls: number }
+  | { type: "report"; report: ScanReport; analyzeMs: number; totalMs: number; usage?: TokenUsage; firecrawlCalls: number; firecrawlCredits: number }
   /** Terminal failure with a human-readable message. */
   | { type: "error"; message: string };
 

@@ -6,7 +6,7 @@ export function OpportunityMeter({ score }: { score: number }) {
   const radius = 54;
   const circumference = 2 * Math.PI * radius;
   const dash = (score / 100) * circumference;
-  const color = score >= 70 ? "#2dd4bf" : score >= 45 ? "#f5a623" : "#5b6b80";
+  const color = score >= 70 ? "#34d399" : score >= 50 ? "#facc15" : score >= 30 ? "#fb923c" : "#f87171";
 
   return (
     <div className="relative flex h-[136px] w-[136px] items-center justify-center">

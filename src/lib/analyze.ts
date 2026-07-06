@@ -19,11 +19,11 @@ import { ANALYSIS_MODEL } from "./params";
 
 /** Human + model-facing definitions of each 0–10 dimension. Keep in sync with schema.Scores. */
 export const SCORE_DEFINITIONS: { key: string; name: string; definition: string }[] = [
-  { key: "pain", name: "Pain Score", definition: "How much frustration, friction, and unmet need shows up (complaints, manual work, workarounds). 10 = severe, chronic pain." },
-  { key: "softwareMaturity", name: "Software Maturity", definition: "How modern/complete the existing software ecosystem is. 10 = mature SaaS everywhere; 0 = spreadsheets, paper, legacy tools." },
-  { key: "founderAccessibility", name: "Founder Accessibility", definition: "How easy is it for an outsider founder (e.g. a college student without deep domain ties) to break into this industry? 10 = very accessible, low barriers to entry; 0 = requires decades of domain relationships, licensing, or regulatory capture." },
-  { key: "aiSuitability", name: "AI Suitability", definition: "How well current manual work maps to what AI can automate today. 10 = highly automatable." },
-  { key: "budgetSignal", name: "Budget Signal", definition: "Evidence that buyers have money and will pay for software (deal sizes, funded vendors, conferences, associations). 10 = strong budgets." },
+  { key: "pain", name: "Pain Score", definition: "How much frustration, friction, and unmet need exists. USE THE FULL 0-10 RANGE — do not cluster around 5-7. Anchors: 1-2 = minor annoyances, people cope fine. 4-5 = real friction but livable, one painful step that wastes ~20 min. 7-8 = widespread complaints, hours of wasted work, people actively seeking alternatives. 9-10 = industry-wide crisis, people quitting over it, lawsuits, systemic failures." },
+  { key: "softwareMaturity", name: "Existing Solution Maturity", definition: "How modern and complete the existing solutions are — software, hardware, services, or any combination. USE THE FULL 0-10 RANGE. Anchors: 1-2 = paper, fax, spreadsheets, no commercial product exists. 4-5 = a few legacy tools or ad-hoc solutions exist but outdated, fragmented, or poorly adopted. 7-8 = solid options exist and most practitioners use them. 9-10 = mature, competitive market with multiple well-funded vendors." },
+  { key: "founderAccessibility", name: "Founder Accessibility", definition: "How easy is it for an outsider founder to break into this space? USE THE FULL 0-10 RANGE. Anchors: 1-2 = requires specific licenses, decades of relationships, or regulatory capture (e.g. defense contracting, pharmaceuticals). 4-5 = domain expertise needed but acquirable in months, some regulatory hurdles. 7-8 = open market, customers reachable online, no special credentials needed. 9-10 = can build and sell with no industry connections." },
+  { key: "aiSuitability", name: "AI Suitability", definition: "How well current manual work maps to what AI can automate or augment today. USE THE FULL 0-10 RANGE. Anchors: 1-2 = work is physical, relationship-driven, or requires real-time human judgment with no data trail. 4-5 = some document/data processing but heavily context-dependent. 7-8 = clear document workflows, pattern matching, classification tasks with existing training data. 9-10 = rote data entry, form filling, extraction from structured documents." },
+  { key: "budgetSignal", name: "Budget Signal", definition: "Evidence that buyers have money and willingness to pay for solutions. USE THE FULL 0-10 RANGE. Anchors: 1-2 = buyers are cost-sensitive individuals or tiny orgs with no budget (e.g. freelance tutors). 4-5 = some willingness to pay but small deal sizes, price-sensitive market. 7-8 = established budgets, $10k+ annual contracts common, funded competitors exist. 9-10 = enterprise buyers, six-figure deals, dedicated procurement teams, large conferences." },
 ];
 
 function config() {
@@ -70,7 +70,8 @@ export const REPORT_SECTIONS: string[] = [
 /** The system prompt: role + hard rules. Kept transparent and short. */
 export const SYSTEM_PROMPT = `You are Blindspot, a sharp industry-diagnostics engine. \
 You read raw web sources about an industry and infer where the structural inefficiencies, labor \
-shortages, software gaps, and AI-native business opportunities are.
+shortages, solution gaps, and business opportunities are — whether the right play is software, \
+hardware, services, or a combination.
 
 Hard rules:
 - Ground EVERY score and EVERY claim in the provided sources. Cite them by their [id] number via \

@@ -24,6 +24,7 @@ import type { Source } from "./schema";
 import type { Intent } from "./intents";
 import { domainOf, truncate } from "./format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "./blocklist";
+import { getCache, setCache } from "./scrape-cache";
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "./triage";
 
 /** Per-page markdown budget (chars). Keeps the LLM prompt within token limits. */
@@ -181,6 +182,14 @@ async function scrapeOne(
     return { ...src, content: "" };
   }
 
+  // Cache hit — skip the Firecrawl call entirely.
+  const cached = await getCache(src.url);
+  if (cached !== null) {
+    const content = truncate(cached, MAX_CHARS_PER_PAGE);
+    onEvent({ type: "scrape:done", id: src.id, domain: src.domain, status: "cached", chars: content.length, ms: 0 });
+    return { ...src, content };
+  }
+
   onEvent({ type: "scrape:begin", id: src.id, domain: src.domain });
   const t0 = now();
   try {
@@ -190,6 +199,7 @@ async function scrapeOne(
     );
     const md = "markdown" in res ? (res.markdown ?? "") : "";
     const content = truncate(md, MAX_CHARS_PER_PAGE);
+    if (content.length > 0) void setCache(src.url, md);
     onEvent({
       type: "scrape:done",
       id: src.id,

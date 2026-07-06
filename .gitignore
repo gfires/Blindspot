@@ -13,6 +13,9 @@ next-env.d.ts
 .DS_Store
 *.tsbuildinfo
 
+# scrape cache — large, local-only
+data/scrape-cache.json
+
 # env — never commit real keys
 .env
 .env.local

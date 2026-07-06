@@ -74,7 +74,7 @@ export type ScanEvent =
       type: "scrape:done";
       id: number;
       domain: string;
-      status: "ok" | "blocked" | "skipped" | "empty";
+      status: "ok" | "cached" | "blocked" | "skipped" | "empty";
       chars: number;
       ms: number;
     }

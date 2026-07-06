@@ -49,7 +49,7 @@ export interface SourceStatus {
   title: string;
   intent: string;
   blocked: boolean; // was on the blocklist at rank time
-  scrape: "queued" | "scraping" | "ok" | "blocked" | "skipped" | "empty";
+  scrape: "queued" | "scraping" | "ok" | "cached" | "blocked" | "skipped" | "empty";
   chars: number;
   ms: number;
   /** Pre-scrape triage score (0–10) and rationale, if triage ran. */

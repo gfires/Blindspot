@@ -38,6 +38,8 @@ function scrapeGlyph(scrape: string): { char: string; cls: string; label: string
       return { char: "◐", cls: "text-amber animate-blink", label: "reading" };
     case "ok":
       return { char: "●", cls: "text-accent", label: "read" };
+    case "cached":
+      return { char: "●", cls: "text-accent", label: "cached" };
     case "blocked":
       return { char: "⛔", cls: "text-danger", label: "blocked" };
     case "skipped":
@@ -92,10 +94,10 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
     if (!done) feedRef.current?.scrollTo({ top: feedRef.current.scrollHeight });
   }, [state.trace.length, done]);
 
-  const scrapedOk = state.sources.filter((s) => s.scrape === "ok").length;
+  const scrapedOk = state.sources.filter((s) => s.scrape === "ok" || s.scrape === "cached").length;
   const skipped = state.sources.filter((s) => s.scrape === "skipped").length;
   const blocked = state.sources.filter((s) => s.scrape === "blocked").length;
-  const settled = state.sources.filter((s) => ["ok", "blocked", "skipped", "empty"].includes(s.scrape)).length;
+  const settled = state.sources.filter((s) => ["ok", "cached", "blocked", "skipped", "empty"].includes(s.scrape)).length;
 
   return (
     <div className="relative mx-auto w-full max-w-4xl overflow-hidden">
@@ -242,6 +244,8 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
                     </span>
                     {s.scrape === "ok" ? (
                       <span className="nums shrink-0 text-[10px] text-mute/70">{fmtMs(s.ms)}</span>
+                    ) : s.scrape === "cached" ? (
+                      <span className="shrink-0 text-[10px] text-mute/70">cached</span>
                     ) : dim ? (
                       <span className="shrink-0 text-[10px] text-mute/70">{g.label}</span>
                     ) : (

@@ -27,7 +27,7 @@ import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "./blockli
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "./triage";
 
 /** Per-page markdown budget (chars). Keeps the LLM prompt within token limits. */
-const MAX_CHARS_PER_PAGE = 3500;
+const MAX_CHARS_PER_PAGE = 5500;
 
 /**
  * Per-page scrape timeout (ms). This is per REQUEST, not the whole phase.
@@ -303,14 +303,14 @@ export async function explore(
     usage: adaptUsage,
   });
 
-  // --- Search + dedupe ---
+  // --- Search + dedupe (blocklist loads in parallel — it's just a file read) ---
   const searchStart = now();
-  const hits = await searchAllIntents(app, intents, onEvent, now);
+  const [hits, blockset] = await Promise.all([
+    searchAllIntents(app, intents, onEvent, now),
+    loadBlocklist(),
+  ]);
   const allCandidates = dedupeCandidates(hits);
   const searchMs = now() - searchStart;
-
-  // Filter out blocklisted domains and PDFs BEFORE triage so they don't waste scrape slots or LLM attention.
-  const blockset = await loadBlocklist();
   const blocked: Candidate[] = [];
   const candidates: Candidate[] = [];
   for (const c of allCandidates) {

@@ -219,12 +219,12 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
               awaiting search results…
             </div>
           ) : (
-            <ul className="max-h-56 space-y-1 overflow-y-auto pr-1">
+            <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
               {state.sources.map((s) => {
                 const g = scrapeGlyph(s.scrape);
                 const dim = s.scrape === "skipped" || s.scrape === "blocked" || s.scrape === "empty";
                 return (
-                  <li key={s.id} className="flex items-center gap-2 font-mono text-[12px]" title={s.reason ?? g.label}>
+                  <li key={s.id} className="flex items-start gap-2 font-mono text-[12px]" title={s.reason ?? g.label}>
                     <span className={g.cls}>{g.char}</span>
                     <span className="nums w-6 shrink-0 text-mute">[{s.id}]</span>
                     {s.relevanceScore != null && (
@@ -237,8 +237,8 @@ export function ScanProgress({ state, done = false }: { state: ScanState; done?:
                         {s.relevanceScore}
                       </span>
                     )}
-                    <span className={`flex-1 truncate ${dim ? "text-mute line-through/0" : "text-fg/80"}`} title={s.title}>
-                      {s.domain}
+                    <span className={`flex-1 line-clamp-2 ${dim ? "text-mute line-through/0" : "text-fg/80"}`} title={s.title}>
+                      {s.title}
                     </span>
                     {s.scrape === "ok" ? (
                       <span className="nums shrink-0 text-[10px] text-mute/70">{fmtMs(s.ms)}</span>

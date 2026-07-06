@@ -115,7 +115,7 @@ Return ONLY JSON: { "intents": [ { "label": "...", "query": "..." }, ... ] }`;
 // ---------------------------------------------------------------------------
 
 const ScoresSchema = z.object({
-  scores: z.array(z.object({ id: z.number().int(), score: z.number(), reason: z.string() })),
+  s: z.array(z.array(z.number()).min(2).max(2)),
 });
 
 /** The score assigned when triage is unavailable — neutral, so selection degrades to coverage-only. */
@@ -156,8 +156,8 @@ Score EACH result 0–10 for how useful its page will be as evidence:
 - LOW: SEO spam, thin listicles ("top 10 best…"), generic definitions, unrelated topics, pure ads.
 - A page surfaced by MULTIPLE intents (shown as "N×") is often more central — weigh that up.
 
-Give a terse one-line reason for each. Return ONLY JSON:
-{ "scores": [ { "id": <number>, "score": <0-10>, "reason": "..." }, ... ] } — one per result.
+Return ONLY JSON — a compact array of [id, score] pairs, no reasons:
+{ "s": [ [0, 7], [1, 3], [2, 9], ... ] } — one pair per result.
 
 RESULTS:
 ${list}`;
@@ -176,9 +176,10 @@ ${list}`;
     const parsed = ScoresSchema.safeParse(JSON.parse(res.choices[0]?.message?.content ?? "{}"));
     if (!parsed.success) return { scores: fillUnscored(candidates, out), usage };
 
-    for (const s of parsed.data.scores) {
-      const cand = candidates[s.id];
-      if (cand) out.set(cand.url, { score: clamp(s.score, 0, 10), reason: s.reason || "" });
+    for (const pair of parsed.data.s) {
+      const [id, score] = pair;
+      const cand = candidates[id];
+      if (cand) out.set(cand.url, { score: clamp(score, 0, 10), reason: "" });
     }
     for (const c of candidates) if (!out.has(c.url)) out.set(c.url, UNSCORED);
     return { scores: out, usage };

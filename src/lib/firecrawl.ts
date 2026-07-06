@@ -180,7 +180,7 @@ async function scrapeOne(
   const t0 = now();
   try {
     const res = await withTimeout(
-      app.scrapeUrl(src.url, { formats: ["markdown"], onlyMainContent: true }),
+      app.scrapeUrl(src.url, { formats: ["markdown"], onlyMainContent: true, parsePDF: false }),
       SCRAPE_TIMEOUT_MS,
     );
     const md = "markdown" in res ? (res.markdown ?? "") : "";
@@ -304,12 +304,12 @@ export async function explore(
   const allCandidates = dedupeCandidates(hits);
   const searchMs = now() - searchStart;
 
-  // Filter out blocklisted domains BEFORE triage so they don't waste scrape slots or LLM attention.
+  // Filter out blocklisted domains and PDFs BEFORE triage so they don't waste scrape slots or LLM attention.
   const blockset = await loadBlocklist();
   const blocked: Candidate[] = [];
   const candidates: Candidate[] = [];
   for (const c of allCandidates) {
-    if (blockset.has(blocklistKey(domainOf(c.url)))) blocked.push(c);
+    if (blockset.has(blocklistKey(domainOf(c.url))) || /\.pdf(\?|#|$)/i.test(c.url)) blocked.push(c);
     else candidates.push(c);
   }
 

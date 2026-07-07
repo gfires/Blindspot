@@ -149,18 +149,29 @@ platform routes these borrowers to the right underwriter or pre-qualifies them w
 documentation (12-month bank statement programs, asset depletion calculations)." \
 Name the population size if available, what they need, what exists today, and what's missing.
 
-- "opportunityThesis": A SINGLE DENSE PARAGRAPH (not a list) that is essentially a one-paragraph \
-pitch a founder can immediately run with. It must: (1) explicitly tie the bottlenecks above to \
-a SPECIFIC product — name the features, the data flows, the integrations, (2) explain the wedge: \
-which single workflow do you automate first and for whom, (3) explain why NOW is the moment \
-(regulatory change, technology inflection, market shift — be specific), and (4) cite sources \
-throughout with [id]s. \
+- "opportunityThesis": TWO DENSE PARAGRAPHS (separated by \\n\\n, not a list) that together form \
+a thesis a founder can immediately run with. \
+PARAGRAPH 1 — THE PRODUCT: (1) explicitly tie the bottlenecks above to a SPECIFIC product — \
+name the features, the data flows, the integrations, (2) explain the wedge: which single \
+workflow do you automate first and for whom, (3) name the specific user persona and their \
+current workaround. Cite sources throughout with [id]s. \
+PARAGRAPH 2 — THE TIMING AND MOAT: (1) explain why NOW is the moment (regulatory change, \
+technology inflection, market shift, new data availability — be specific with dates, bill \
+numbers, or technology milestones from the sources), (2) describe the compounding advantage — \
+what gets better with each customer (data flywheel, network effect, integration lock-in), \
+(3) size the initial wedge market if the sources support it (number of practitioners, \
+companies, or transaction volume). Cite sources throughout with [id]s. \
 BAD: "AI-driven solutions can address regulatory compliance and administrative burdens." \
-GOOD: "A system that ingests borrower documents (W-2s, 1099s, bank statements) via OCR, \
-auto-populates the 1003 Uniform Residential Loan Application, and submits directly to DU/LP \
-would eliminate the 2-4 hour manual verification bottleneck that [3] identifies. The wedge is \
-the 1099/self-employed segment..." \
-Think: someone should be able to read this paragraph and start building a PRD.
+GOOD first paragraph: "A system that ingests borrower documents (W-2s, 1099s, bank statements) \
+via OCR, auto-populates the 1003 Uniform Residential Loan Application, and submits directly to \
+DU/LP would eliminate the 2-4 hour manual verification bottleneck that [3] identifies. The \
+wedge is the 1099/self-employed segment..." \
+GOOD second paragraph: "The timing is driven by CFPB's 2025 Section 1033 open banking rule, \
+which for the first time requires banks to share consumer financial data via API [7] — this \
+makes bank-statement-based income verification programmatic rather than manual. Each lender \
+onboarded adds to a training corpus of underwriting decisions that improves approval-rate \
+prediction across the 380,000 active loan officers [11]..." \
+Think: someone should be able to read these two paragraphs and start building a PRD.
 
 - "adjacentMarkets": Neighboring industries or verticals with crossover potential. 3-5 items. \
 CRITICAL: each adjacent market must explain the SPECIFIC MECHANISM of crossover — what shared \

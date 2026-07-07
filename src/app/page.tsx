@@ -13,6 +13,7 @@ import { useScanStream } from "@/lib/useScanStream";
 import { ScanInput } from "@/components/ScanInput";
 import { ScanProgress } from "@/components/ScanProgress";
 import { ReportView } from "@/components/ReportView";
+import { Leaderboard } from "@/components/Leaderboard";
 
 export default function Home() {
   const { state, start, reset } = useScanStream();
@@ -25,8 +26,9 @@ export default function Home() {
     <main className="min-h-screen px-4 py-10 sm:py-16">
       {/* Idle / landing */}
       {state.phase === "idle" && (
-        <div className="flex min-h-[70vh] items-center justify-center">
+        <div className="flex min-h-[70vh] flex-col items-center justify-center">
           <ScanInput onRun={start} disabled={state.running} />
+          <Leaderboard />
         </div>
       )}
 

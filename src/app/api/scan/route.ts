@@ -17,6 +17,7 @@
 import { normalizeIndustry } from "@/lib/intents";
 import { explore } from "@/lib/firecrawl";
 import { callLLM, assembleReport, buildPrompt, SYSTEM_PROMPT, currentModel } from "@/lib/analyze";
+import { recordScan } from "@/lib/leaderboard";
 import type { ScanEvent } from "@/lib/events";
 
 export const runtime = "nodejs";
@@ -64,6 +65,8 @@ export async function POST(req: Request) {
         const { report: llm, usage: analyzeUsage } = await callLLM(industry, scraped);
         const report = assembleReport(industry, llm, sources, new Date().toISOString());
         const analyzeMs = Date.now() - analyzeStart;
+
+        void recordScan(report.industry, report.opportunityScore, report.scores);
 
         send({ type: "report", report, analyzeMs, totalMs: Date.now() - scanStart, usage: analyzeUsage, firecrawlCalls, firecrawlCredits });
       } catch (err) {

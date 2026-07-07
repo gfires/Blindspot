@@ -346,9 +346,9 @@ export async function explore(
   const { scraped, apiCalls: scrapeApiCalls } = await scrapeSources(app, ranked, onEvent, now, nowIso);
   const scrapeMs = now() - scrapeStart;
 
-  // Credit math: 1 credit per search, 2 per scrape (cached/skipped don't count).
+  // Credit math: 2 credits per search, 1 per scrape (cached/skipped don't count).
   const firecrawlCalls = searchResult.apiCalls + scrapeApiCalls;
-  const firecrawlCredits = searchResult.apiCalls * 1 + scrapeApiCalls * 2;
+  const firecrawlCredits = searchResult.apiCalls * 2 + scrapeApiCalls * 1;
 
   return { sources, scraped, searchMs, scrapeMs, firecrawlCalls, firecrawlCredits };
 }

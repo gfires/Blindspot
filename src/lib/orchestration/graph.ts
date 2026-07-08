@@ -35,7 +35,8 @@ import { managerModel } from "../models/provider";
 // evidence/firecrawl.ts: turn a question into web Evidence for the given loop.
 import { search } from "../evidence/firecrawl";
 // committee.ts: run the multi-role committee over a question + evidence → Claims.
-import { runCommittee } from "../committee";
+// (committee derives the loop iteration from the evidence's own loopIteration.)
+import { runCommittee } from "./committee";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
 import { allocateBudget } from "./gate";
 
@@ -119,7 +120,7 @@ async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>>
 async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
   const batches = await Promise.all(
-    questions.map((q) => runCommittee(q, state.evidence, state.loopIteration)),
+    questions.map((q) => runCommittee(q, state.evidence)),
   );
   const claims: Claim[] = batches.flat();
   return { claims };

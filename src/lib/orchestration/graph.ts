@@ -31,14 +31,17 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
 
-// --- Cross-agent contract imports (implemented on sibling branches) ------------
-// evidence/firecrawl.ts: turn a question into web Evidence for the given loop.
+// --- Cross-agent integration imports (implemented on sibling branches) ---------
+// evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
 import { search } from "../evidence/firecrawl";
 // committee.ts: run the multi-role committee over a question + evidence → Claims.
 // (committee derives the loop iteration from the evidence's own loopIteration.)
 import { runCommittee } from "./committee";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
 import { allocateBudget } from "./gate";
+
+/** Web results to fetch per unresolved question each retrieval loop. */
+const RESULTS_PER_QUESTION = 6;
 
 // ---------------------------------------------------------------------------
 // decompose
@@ -97,15 +100,19 @@ const unresolved = (state: ResearchStateT): Question[] =>
   state.questions.filter((q) => !q.resolved);
 
 /**
- * Search the web for each unresolved question (in parallel) and append the hits.
- * The `evidence` reducer is append-only, so we return only the new items.
+ * Search the web for every unresolved question and append the hits. `search` takes
+ * the batch of query strings and parallelizes internally, tagging each Evidence with
+ * its `sourceQuery` and the current `loopIteration`. The `evidence` reducer is
+ * append-only, so we return only the new items.
  */
 async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
-  const batches = await Promise.all(
-    questions.map((q) => search(q, state.loopIteration)),
+  if (questions.length === 0) return {};
+  const evidence: Evidence[] = await search(
+    questions.map((q) => q.text),
+    RESULTS_PER_QUESTION,
+    state.loopIteration,
   );
-  const evidence: Evidence[] = batches.flat();
   return { evidence };
 }
 

@@ -24,18 +24,23 @@ export async function runGraphStreaming(
     { configurable: { thread_id: threadId }, streamMode: "updates" as const },
   );
 
-  let finalState: ResearchStateT | null = null;
   let allLlmCalls: AnnotatedUsage[] = [];
   let totalFirecrawlCalls = 0;
   let totalFirecrawlCredits = 0;
+  let currentLoopIteration = 0;
+  const seenNodes = new Set<string>();
 
   for await (const update of stream) {
     for (const [nodeName, nodeOutput] of Object.entries(update)) {
       const output = nodeOutput as Partial<ResearchStateT>;
 
+      if (!seenNodes.has(nodeName)) {
+        seenNodes.add(nodeName);
+        sendBeginEvent(send, nodeName, currentLoopIteration, output);
+      }
+
       switch (nodeName) {
         case "decompose": {
-          send({ type: "decompose:begin" });
           const questions = (output.questions ?? []) as Question[];
           const usage = output.llmCalls?.[0];
           if (usage) {
@@ -57,19 +62,13 @@ export async function runGraphStreaming(
           totalFirecrawlCalls += calls;
           totalFirecrawlCredits += credits;
 
-          send({
-            type: "retrieve:begin",
-            loopIteration: 0,
-            questionIds: evidence.map(e => e.sourceQuery),
-          });
-
           for (const ev of evidence) {
             send({ type: "retrieve:evidence", evidence: ev, questionId: ev.sourceQuery });
           }
 
           send({
             type: "retrieve:done",
-            loopIteration: 0,
+            loopIteration: currentLoopIteration,
             evidenceCount: evidence.length,
             firecrawlCalls: calls,
           });
@@ -81,9 +80,6 @@ export async function runGraphStreaming(
           const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
           allLlmCalls.push(...usages);
 
-          const questionIds = [...new Set(claims.map(c => c.questionId))];
-          send({ type: "debate:begin", loopIteration: 0, questionIds });
-
           for (const claim of claims) {
             send({ type: "debate:claim", claim });
           }
@@ -92,18 +88,17 @@ export async function runGraphStreaming(
             send({ type: "research:usage", usage: u });
           }
 
-          send({ type: "debate:done", loopIteration: 0, claimCount: claims.length });
+          send({ type: "debate:done", loopIteration: currentLoopIteration, claimCount: claims.length });
           break;
         }
 
         case "gate": {
-          const loopIteration = (output.loopIteration ?? 0) as number;
+          const loopIteration = (output.loopIteration ?? currentLoopIteration) as number;
           const converged = (output.converged ?? false) as boolean;
           const questions = (output.questions ?? []) as Question[];
           const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
+          const voiScores = (output.voiScores ?? []) as VoiScore[];
           allLlmCalls.push(...usages);
-
-          send({ type: "gate:begin", loopIteration });
 
           for (const u of usages) {
             send({ type: "research:usage", usage: u });
@@ -111,32 +106,35 @@ export async function runGraphStreaming(
 
           const resolvedQuestionIds = questions.filter(q => q.resolved).map(q => q.id);
           const unresolvedQuestionIds = questions.filter(q => !q.resolved).map(q => q.id);
+          const continueLoop = !converged;
 
           send({
             type: "gate:done",
-            loopIteration,
+            loopIteration: currentLoopIteration,
             resolvedQuestionIds,
             unresolvedQuestionIds,
-            continueLoop: !converged,
-            voiScores: [],
+            continueLoop,
+            voiScores,
           });
+
+          if (continueLoop) {
+            currentLoopIteration = loopIteration;
+            seenNodes.delete("retrieve");
+            seenNodes.delete("debate");
+            seenNodes.delete("gate");
+          }
           break;
         }
 
         case "recommend": {
-          send({ type: "recommend:begin" });
           break;
         }
-      }
-
-      if (output.questions || output.evidence || output.claims) {
-        finalState = { ...finalState, ...output } as ResearchStateT;
       }
     }
   }
 
   const fullState = await graph.getState({ configurable: { thread_id: threadId } });
-  finalState = fullState.values as ResearchStateT;
+  const finalState = fullState.values as ResearchStateT;
 
   const report = synthesizeReport(finalState);
   send({ type: "recommend:done", report });
@@ -150,4 +148,35 @@ export async function runGraphStreaming(
     firecrawlCredits: totalFirecrawlCredits,
     durationMs: Date.now() - t0,
   };
+}
+
+function sendBeginEvent(
+  send: (event: ResearchEvent) => void,
+  nodeName: string,
+  loopIteration: number,
+  output: Partial<ResearchStateT>,
+): void {
+  switch (nodeName) {
+    case "decompose":
+      send({ type: "decompose:begin" });
+      break;
+    case "retrieve": {
+      const evidence = (output.evidence ?? []) as Evidence[];
+      const questionIds = [...new Set(evidence.map(e => e.sourceQuery))];
+      send({ type: "retrieve:begin", loopIteration, questionIds });
+      break;
+    }
+    case "debate": {
+      const claims = (output.claims ?? []) as Claim[];
+      const questionIds = [...new Set(claims.map(c => c.questionId))];
+      send({ type: "debate:begin", loopIteration, questionIds });
+      break;
+    }
+    case "gate":
+      send({ type: "gate:begin", loopIteration });
+      break;
+    case "recommend":
+      send({ type: "recommend:begin" });
+      break;
+  }
 }

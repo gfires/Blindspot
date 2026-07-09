@@ -2,6 +2,7 @@ import { Annotation } from "@langchain/langgraph";
 import type { Evidence } from "./evidence";
 import type { Claim } from "./claim";
 import type { AnnotatedUsage } from "../orchestration/eval";
+import type { VoiScore } from "../research-events";
 
 export interface Question {
   id: string;
@@ -34,6 +35,11 @@ export const ResearchState = Annotation.Root({
   /** Every LLM call made anywhere in the graph (decompose, committee, gate), append-only. */
   llmCalls: Annotation<AnnotatedUsage[]>({
     reducer: (prev, next) => [...prev, ...next],
+    default: () => [],
+  }),
+  /** Per-question VOI scores from the most recent gate evaluation. */
+  voiScores: Annotation<VoiScore[]>({
+    reducer: (_prev, next) => next,
     default: () => [],
   }),
 });

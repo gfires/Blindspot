@@ -21,3 +21,5 @@ data/search-cache.json
 .env
 .env.local
 .env*.local
+.ittybitty/agents/
+.ittybitty/archive/

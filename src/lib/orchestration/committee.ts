@@ -34,7 +34,7 @@ by the evidence you were given, not by how plausible your reasoning feels. Follo
 
 - Anchor LOW and let evidence raise you. With no supporting evidence, you start near 0.2, not 0.5.
 - Penalize sparsity: if supportingEvidenceIds has 0–1 entries, your confidence MUST stay below 0.5.
-  Two-to-three independent, on-point sources is roughly the floor for confidence above 0.6.
+  Two-to-three independent, on-point sources is the floor for confidence above 0.6.
 - Penalize contradiction HARD: if contradictingEvidenceIds is non-empty, cap confidence at 0.6, and
   drop further for every credible source that cuts against you. A single strong contradiction that
   you cannot explain away should pull you below 0.4.

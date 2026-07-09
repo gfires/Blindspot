@@ -1,13 +1,14 @@
 import { z } from "zod";
 
 export const EvidenceSchema = z.object({
-  id: z.string(),                    // stable hash of URL+content
+  id: z.string(),
   url: z.string().url(),
+  domain: z.string(),
   title: z.string(),
   snippet: z.string(),
-  sourceQuery: z.string(),           // which search query surfaced this
-  loopIteration: z.number().int(),  // 0 = initial retrieval, 1+ = targeted
-  retrievedAt: z.string().datetime(),
-  contentHash: z.string(),          // for dedup
+  content: z.string(),
+  contentHash: z.string(),
+  sourceQuery: z.string(),
+  loopIteration: z.number().int(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;

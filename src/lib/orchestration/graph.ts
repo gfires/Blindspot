@@ -30,6 +30,8 @@ import { ResearchState, type ResearchStateT, type Question } from "../schemas/st
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
+import type { ArmResult } from "./eval";
+import { BUDGET } from "./gate";
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
@@ -113,7 +115,11 @@ async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>>
     RESULTS_PER_QUESTION,
     state.loopIteration,
   );
-  return { evidence };
+  return {
+    evidence,
+    firecrawlCalls: questions.length,
+    firecrawlCredits: evidence.length,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +153,7 @@ async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
  * edge can read it without re-running the policy.
  */
 async function gate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
-  const { state: next, continueLoop } = allocateBudget(state);
+  const { state: next, continueLoop } = await allocateBudget(state);
   return {
     questions: next.questions,
     loopIteration: next.loopIteration,
@@ -271,4 +277,32 @@ const workflow = new StateGraph(ResearchState)
 export function compileResearchGraph() {
   const checkpointer = new MemorySaver();
   return workflow.compile({ checkpointer });
+}
+
+export async function runGraph(topic: string): Promise<ArmResult> {
+  const graph = compileResearchGraph();
+  const threadId = `run-${Date.now()}`;
+  const t0 = Date.now();
+
+  const finalState: ResearchStateT = await graph.invoke(
+    { topic, budgetRemaining: BUDGET.totalFirecrawlBudget },
+    { configurable: { thread_id: threadId } },
+  );
+
+  const report = synthesizeReport(finalState);
+
+  return {
+    arm: "orchestrated",
+    topic,
+    report,
+    tokens: {
+      calls: [],
+      totalPromptTokens: 0,
+      totalCompletionTokens: 0,
+      totalCostUsd: 0,
+    },
+    firecrawlCalls: finalState.firecrawlCalls,
+    firecrawlCredits: finalState.firecrawlCredits,
+    durationMs: Date.now() - t0,
+  };
 }

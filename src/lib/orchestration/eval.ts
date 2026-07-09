@@ -13,6 +13,7 @@ import { explore } from "../evidence/firecrawl";
 import { callLLM, assembleReport } from "../analyze";
 import { normalizeIndustry } from "../intents";
 import type { ScanReport } from "../schema";
+import type { ResearchReport } from "./graph";
 import type { ScanEvent, TokenUsage } from "../events";
 
 /** Cost per million tokens by model (USD). Update when model pricing changes. */
@@ -44,7 +45,7 @@ export interface ArmTokens {
 export interface ArmResult {
   arm: string;
   topic: string;
-  report: ScanReport;
+  report: ScanReport | ResearchReport;
   tokens: ArmTokens;
   firecrawlCalls: number;
   firecrawlCredits: number;

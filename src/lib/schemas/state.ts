@@ -27,6 +27,8 @@ export const ResearchState = Annotation.Root({
   loopIteration: Annotation<number>({ reducer: (_prev, next) => next, default: () => 0 }),
   budgetRemaining: Annotation<number>({ reducer: (_prev, next) => next, default: () => 0 }),
   budgetSpent: Annotation<number>({ reducer: (_prev, next) => next, default: () => 0 }),
+  firecrawlCalls: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
+  firecrawlCredits: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
   converged: Annotation<boolean>({ reducer: (_prev, next) => next, default: () => false }),
 });
 export type ResearchStateT = typeof ResearchState.State;

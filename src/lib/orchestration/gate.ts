@@ -2,14 +2,7 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import { gateModel } from "../models/provider";
 import type { ResearchStateT } from "../schemas/state";
-
-// Cheap-iteration budget for the freight brokerage test run
-export const BUDGET = {
-  maxLoopIterations: 2,       // initial retrieval + at most one targeted round
-  sourcesPerRetrieval: 4,     // Firecrawl calls per question per round
-  maxQuestions: 4,            // keep the manager's decomposition small
-  totalFirecrawlBudget: 32,   // hard cap: 4 questions x 4 sources x ~2 rounds
-};
+import { MAX_LOOP_ITERATIONS, VOI_THRESHOLD } from "../params";
 
 const GapScoreSchema = z.object({
   questionId: z.string(),
@@ -21,7 +14,7 @@ const GapScoreSchema = z.object({
 export async function allocateBudget(
   state: ResearchStateT
 ): Promise<{ state: ResearchStateT; continueLoop: boolean }> {
-  if (state.budgetRemaining <= 0 || state.loopIteration >= BUDGET.maxLoopIterations) {
+  if (state.budgetRemaining <= 0 || state.loopIteration >= MAX_LOOP_ITERATIONS) {
     return { state: { ...state, converged: true }, continueLoop: false };
   }
 
@@ -39,7 +32,6 @@ export async function allocateBudget(
     }))
     .sort((a, b) => b.voi - a.voi);
 
-  const VOI_THRESHOLD = 0.15; // tune after first test run
   const worthPursuing = ranked.filter(r => r.voi > VOI_THRESHOLD);
 
   if (worthPursuing.length === 0) {

@@ -31,7 +31,7 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
 import type { ArmResult } from "./eval";
-import { BUDGET } from "./gate";
+import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET } from "../params";
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
@@ -41,9 +41,6 @@ import { search } from "../evidence/firecrawl";
 import { runCommittee } from "./committee";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
 import { allocateBudget } from "./gate";
-
-/** Web results to fetch per unresolved question each retrieval loop. */
-const RESULTS_PER_QUESTION = 6;
 
 // ---------------------------------------------------------------------------
 // decompose
@@ -60,8 +57,8 @@ const DecompositionSchema = z.object({
           .describe('theme, e.g. "market structure" or "willingness to pay"'),
       }),
     )
-    .min(3)
-    .max(5),
+    .min(MIN_QUESTIONS)
+    .max(MAX_QUESTIONS),
 });
 
 /**
@@ -285,7 +282,7 @@ export async function runGraph(topic: string): Promise<ArmResult> {
   const t0 = Date.now();
 
   const finalState: ResearchStateT = await graph.invoke(
-    { topic, budgetRemaining: BUDGET.totalFirecrawlBudget },
+    { topic, budgetRemaining: TOTAL_FIRECRAWL_BUDGET },
     { configurable: { thread_id: threadId } },
   );
 

@@ -5,7 +5,7 @@ import type { ResearchStateT, Question } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import type { AnnotatedUsage } from "./eval";
-import type { ResearchEvent, VoiScore } from "../research-events";
+import type { ResearchEvent, GateScore } from "../research-events";
 import { TOTAL_FIRECRAWL_BUDGET } from "../params";
 
 export async function runGraphStreaming(
@@ -97,7 +97,7 @@ export async function runGraphStreaming(
           const converged = (output.converged ?? false) as boolean;
           const questions = (output.questions ?? []) as Question[];
           const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
-          const voiScores = (output.voiScores ?? []) as VoiScore[];
+          const gateScores = (output.gateScores ?? []) as GateScore[];
           allLlmCalls.push(...usages);
 
           for (const u of usages) {
@@ -114,7 +114,7 @@ export async function runGraphStreaming(
             resolvedQuestionIds,
             unresolvedQuestionIds,
             continueLoop,
-            voiScores,
+            gateScores,
           });
 
           if (continueLoop) {

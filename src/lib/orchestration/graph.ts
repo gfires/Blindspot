@@ -115,10 +115,13 @@ async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>>
     RESULTS_PER_QUESTION,
     state.loopIteration,
   );
+  const calls = questions.length;
   return {
     evidence,
-    firecrawlCalls: questions.length,
+    firecrawlCalls: calls,
     firecrawlCredits: evidence.length,
+    budgetRemaining: state.budgetRemaining - calls,
+    budgetSpent: state.budgetSpent + calls,
   };
 }
 
@@ -154,7 +157,7 @@ async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
  * edge can read it without re-running the policy.
  */
 async function gate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
-  const { state: next, continueLoop, usage, voiScores } = await allocateBudget(state);
+  const { state: next, continueLoop, usage, gateScores } = await allocateBudget(state);
   return {
     questions: next.questions,
     loopIteration: next.loopIteration,
@@ -162,7 +165,7 @@ async function gate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
     budgetSpent: next.budgetSpent,
     converged: !continueLoop,
     llmCalls: usage,
-    voiScores,
+    gateScores,
   };
 }
 

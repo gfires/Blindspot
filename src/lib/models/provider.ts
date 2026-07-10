@@ -17,3 +17,4 @@ export function modelForRole(role: AgentRoleT) {
 // manager + gate use a cheap/fast model for triage-y work
 export const managerModel = anthropic("claude-sonnet-5");
 export const gateModel = anthropic("claude-sonnet-5");
+export const gateClassifierModel = openai("gpt-4o-mini");

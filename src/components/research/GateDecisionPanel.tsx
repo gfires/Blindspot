@@ -1,7 +1,6 @@
 "use client";
 
 import type { GateDecision } from "@/lib/useResearchStream";
-import { VOI_THRESHOLD } from "@/lib/params";
 
 interface Props {
   decisions: GateDecision[];
@@ -23,48 +22,33 @@ export function GateDecisionPanel({ decisions }: Props) {
         )}
       </summary>
       <div className="px-3 pb-3 space-y-2">
-        {latest.voiScores.length > 0 ? (
+        {latest.gateScores.length > 0 ? (
           <table className="w-full text-[11px] font-mono">
             <thead>
               <tr className="text-mute text-left">
                 <th className="py-1 pr-2">Question</th>
-                <th className="py-1 pr-2">VOI</th>
-                <th className="py-1 pr-2">Disagree</th>
-                <th className="py-1 pr-2">Sensitivity</th>
-                <th className="py-1 pr-2">Tractability</th>
-                <th className="py-1">Decision</th>
+                <th className="py-1 pr-2">Decision</th>
+                <th className="py-1 pr-2">Gaps</th>
+                <th className="py-1 pr-2">Spread</th>
+                <th className="py-1">Reason</th>
               </tr>
             </thead>
             <tbody>
-              {latest.voiScores.map(s => {
-                const passes = s.voi > VOI_THRESHOLD;
-                return (
-                  <tr key={s.questionId} className={passes ? "text-fg" : "text-mute"}>
-                    <td className="py-1 pr-2">{s.questionId}</td>
-                    <td className="py-1 pr-2">
-                      <div className="flex items-center gap-1">
-                        <div className="h-1 w-12 rounded-full bg-panel2 overflow-hidden">
-                          <div
-                            className={`h-full rounded-full ${passes ? "bg-accent" : "bg-mute"}`}
-                            style={{ width: `${Math.min(100, s.voi * 100 / 0.5)}%` }}
-                          />
-                        </div>
-                        <span className="nums">{s.voi.toFixed(3)}</span>
-                      </div>
-                    </td>
-                    <td className="py-1 pr-2 nums">{s.disagreement.toFixed(2)}</td>
-                    <td className="py-1 pr-2 nums">{s.sensitivity.toFixed(2)}</td>
-                    <td className="py-1 pr-2 nums">{s.tractability.toFixed(2)}</td>
-                    <td className="py-1">
-                      {latest.resolvedIds.includes(s.questionId) ? (
-                        <span className="text-mute">resolved</span>
-                      ) : (
-                        <span className="text-accent">continue</span>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
+              {latest.gateScores.map(s => (
+                <tr key={s.questionId} className={s.retrieve ? "text-fg" : "text-mute"}>
+                  <td className="py-1 pr-2">{s.questionId}</td>
+                  <td className="py-1 pr-2">
+                    {s.retrieve ? (
+                      <span className="text-accent">RETRIEVE</span>
+                    ) : (
+                      <span className="text-mute">RESOLVED</span>
+                    )}
+                  </td>
+                  <td className="py-1 pr-2 nums">{s.gapCount}</td>
+                  <td className="py-1 pr-2 nums">{s.confidenceSpread.toFixed(2)}</td>
+                  <td className="py-1 text-mute">{s.reason}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
         ) : (
@@ -73,9 +57,6 @@ export function GateDecisionPanel({ decisions }: Props) {
             {latest.continueLoop && " — looping for more evidence"}
           </div>
         )}
-        <div className="text-[10px] text-mute font-mono">
-          threshold: {VOI_THRESHOLD}
-        </div>
       </div>
     </details>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
-import type { ResearchEvent, ResearchPhase, VoiScore } from "./research-events";
+import type { ResearchEvent, ResearchPhase, GateScore } from "./research-events";
 import { researchPhaseFor } from "./research-events";
 import type { Question } from "./schemas/state";
 import type { Evidence } from "./schemas/evidence";
@@ -20,7 +20,7 @@ export interface QuestionStatus {
 
 export interface GateDecision {
   loopIteration: number;
-  voiScores: VoiScore[];
+  gateScores: GateScore[];
   resolvedIds: string[];
   unresolvedIds: string[];
   continueLoop: boolean;
@@ -259,7 +259,7 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
     case "gate:done": {
       const decision: GateDecision = {
         loopIteration: ev.loopIteration,
-        voiScores: ev.voiScores,
+        gateScores: ev.gateScores,
         resolvedIds: ev.resolvedQuestionIds,
         unresolvedIds: ev.unresolvedQuestionIds,
         continueLoop: ev.continueLoop,

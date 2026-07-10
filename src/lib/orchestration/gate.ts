@@ -1,100 +1,99 @@
 import { generateObject } from "ai";
 import { z } from "zod";
-import { gateModel } from "../models/provider";
+import { gateClassifierModel } from "../models/provider";
 import type { ResearchStateT } from "../schemas/state";
-import { MAX_LOOP_ITERATIONS, VOI_THRESHOLD } from "../params";
+import { MAX_LOOP_ITERATIONS } from "../params";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
-import type { VoiScore } from "../research-events";
+import type { GateScore } from "../research-events";
 
-const GapScoreSchema = z.object({
-  questionId: z.string(),
-  disagreementMagnitude: z.number().min(0).max(1),   // spread across the 4 claims
-  recommendationSensitivity: z.number().min(0).max(1), // how much this question moves the final call
-  tractability: z.number().min(0).max(1),              // likely to find better evidence
+const GateDecisionSchema = z.object({
+  decisions: z.array(z.object({
+    questionId: z.string(),
+    retrieve: z.boolean(),
+    reason: z.string(),
+  })),
 });
 
 export async function allocateBudget(
   state: ResearchStateT
-): Promise<{ state: ResearchStateT; continueLoop: boolean; usage: AnnotatedUsage[]; voiScores: VoiScore[] }> {
+): Promise<{ state: ResearchStateT; continueLoop: boolean; usage: AnnotatedUsage[]; gateScores: GateScore[] }> {
   if (state.budgetRemaining <= 0 || state.loopIteration >= MAX_LOOP_ITERATIONS) {
-    return { state: { ...state, converged: true }, continueLoop: false, usage: [], voiScores: [] };
+    return { state: { ...state, converged: true }, continueLoop: false, usage: [], gateScores: [] };
   }
 
-  // score every unresolved question's value of further retrieval
-  const { object: scores, usage } = await generateObject({
-    model: gateModel,
-    schema: z.object({ scores: z.array(GapScoreSchema) }),
-    prompt: buildGatePrompt(state),
+  const unresolved = state.questions.filter(q => !q.resolved);
+
+  const questionSignals = unresolved.map(q => {
+    const claims = state.claims.filter(c => c.questionId === q.id);
+    const confidences = claims.map(c => c.confidence);
+    const gapCount = claims.reduce((sum, c) => sum + c.missingEvidence.length, 0);
+    const confidenceSpread = confidences.length >= 2
+      ? Math.max(...confidences) - Math.min(...confidences)
+      : 0;
+
+    const claimSummary = claims.length
+      ? claims.map(c => `  - [${c.agentRole}] "${c.conclusion}" (confidence: ${c.confidence.toFixed(2)}, gaps: ${c.missingEvidence.length})`).join("\n")
+      : "  - no claims yet";
+
+    return { question: q, gapCount, confidenceSpread, claimSummary };
   });
-  const callUsage = [toAnnotatedUsage(usage, gateModel.modelId, "gate")];
 
-  const ranked = scores.scores
-    .map(s => ({
-      ...s,
-      voi: s.disagreementMagnitude * s.recommendationSensitivity * s.tractability,
-    }))
-    .sort((a, b) => b.voi - a.voi);
+  const sections = questionSignals.map(qs =>
+    `Question ${qs.question.id} (${qs.question.category}): ${qs.question.text}\n` +
+    `  Computed: gapCount=${qs.gapCount}, confidenceSpread=${qs.confidenceSpread.toFixed(2)}\n` +
+    `  Claims:\n${qs.claimSummary}`
+  );
 
-  const worthPursuing = ranked.filter(r => r.voi > VOI_THRESHOLD);
+  const prompt = `You are a research gate classifier deciding which questions need more evidence retrieval.
 
-  const voiScores: VoiScore[] = ranked.map(r => ({
-    questionId: r.questionId,
-    voi: r.voi,
-    disagreement: r.disagreementMagnitude,
-    sensitivity: r.recommendationSensitivity,
-    tractability: r.tractability,
+Current state: loop iteration ${state.loopIteration}, budget remaining ${state.budgetRemaining} calls.
+
+Decision rules (apply in order):
+- If this is iteration 0 (first pass): default to YES unless agents already agree directionally and no specific evidence gaps are named.
+- If 3+ agents name overlapping missing evidence (similar data/sources): YES.
+- If agents reach opposing conclusions on the same sub-question: YES.
+- If all agents agree directionally and gaps are vague ("more data would help"): NO.
+- If budget remaining is low (≤2 calls): only YES for the single highest-gap question.
+
+For each question, decide: should we retrieve more evidence (true) or mark as resolved (false)?
+Explain your decision in one sentence per question.
+
+${sections.join("\n\n")}
+
+Return a decision for every question ID listed above.`;
+
+  const { object, usage } = await generateObject({
+    model: gateClassifierModel,
+    schema: GateDecisionSchema,
+    prompt,
+  });
+  const callUsage = [toAnnotatedUsage(usage, gateClassifierModel.modelId, "gate")];
+
+  const signalMap = new Map(questionSignals.map(qs => [qs.question.id, qs]));
+
+  const gateScores: GateScore[] = object.decisions.map(d => ({
+    questionId: d.questionId,
+    retrieve: d.retrieve,
+    gapCount: signalMap.get(d.questionId)?.gapCount ?? 0,
+    confidenceSpread: signalMap.get(d.questionId)?.confidenceSpread ?? 0,
+    reason: d.reason,
   }));
 
-  if (worthPursuing.length === 0) {
-    return { state: { ...state, converged: true }, continueLoop: false, usage: callUsage, voiScores };
+  const continueLoop = gateScores.some(d => d.retrieve);
+
+  if (!continueLoop) {
+    return { state: { ...state, converged: true }, continueLoop: false, usage: callUsage, gateScores };
   }
 
-  const questions = state.questions.map(q =>
-    worthPursuing.some(w => w.questionId === q.id) ? q : { ...q, resolved: true }
-  );
+  const questions = state.questions.map(q => {
+    const score = gateScores.find(s => s.questionId === q.id);
+    return score && !score.retrieve ? { ...q, resolved: true } : q;
+  });
 
   return {
     state: { ...state, questions, loopIteration: state.loopIteration + 1 },
     continueLoop: true,
     usage: callUsage,
-    voiScores,
+    gateScores,
   };
-}
-
-function buildGatePrompt(state: ResearchStateT): string {
-  const unresolved = state.questions.filter(q => !q.resolved);
-
-  const sections = unresolved.map(q => {
-    const claims = state.claims.filter(c => c.questionId === q.id);
-
-    const claimLines = claims.length
-      ? claims
-          .map(c => {
-            const missing = c.missingEvidence.length
-              ? c.missingEvidence.join("; ")
-              : "none noted";
-            return `  - [${c.agentRole}] conclusion: "${c.conclusion}" | confidence: ${c.confidence.toFixed(
-              2
-            )} | supporting: ${c.supportingEvidenceIds.length} | contradicting: ${
-              c.contradictingEvidenceIds.length
-            } | missing evidence: ${missing}`;
-          })
-          .join("\n")
-      : "  - no claims yet";
-
-    return `Question ${q.id} (${q.category}): ${q.text}\n${claimLines}`;
-  });
-
-  return `You are scoring the value of further retrieval for each unresolved research question below.
-
-For each question, the committee's per-agent claims are listed with their conclusion, confidence, evidence counts, and noted evidence gaps.
-
-Score each question on three axes (0-1):
-- disagreementMagnitude: how much the agents' conclusions and confidences diverge
-- recommendationSensitivity: how much resolving this question would change the final recommendation
-- tractability: how likely additional retrieval is to actually close the gap (based on missing evidence and contradiction counts)
-
-${sections.join("\n\n")}
-
-Return a score for every question ID listed above.`;
 }

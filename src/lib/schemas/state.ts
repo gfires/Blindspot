@@ -2,7 +2,7 @@ import { Annotation } from "@langchain/langgraph";
 import type { Evidence } from "./evidence";
 import type { Claim } from "./claim";
 import type { AnnotatedUsage } from "../orchestration/eval";
-import type { VoiScore } from "../research-events";
+import type { GateScore } from "../research-events";
 
 export interface Question {
   id: string;
@@ -37,8 +37,8 @@ export const ResearchState = Annotation.Root({
     reducer: (prev, next) => [...prev, ...next],
     default: () => [],
   }),
-  /** Per-question VOI scores from the most recent gate evaluation. */
-  voiScores: Annotation<VoiScore[]>({
+  /** Per-question gate scores from the most recent gate evaluation. */
+  gateScores: Annotation<GateScore[]>({
     reducer: (_prev, next) => next,
     default: () => [],
   }),

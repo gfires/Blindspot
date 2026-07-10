@@ -6,12 +6,12 @@ import type { ResearchReport } from "./orchestration/graph";
 
 export type ResearchPhase = "decompose" | "retrieve" | "debate" | "gate" | "recommend" | "done";
 
-export interface VoiScore {
+export interface GateScore {
   questionId: string;
-  voi: number;
-  disagreement: number;
-  sensitivity: number;
-  tractability: number;
+  retrieve: boolean;
+  gapCount: number;
+  confidenceSpread: number;
+  reason: string;
 }
 
 export type ResearchEvent =
@@ -31,7 +31,7 @@ export type ResearchEvent =
       resolvedQuestionIds: string[];
       unresolvedQuestionIds: string[];
       continueLoop: boolean;
-      voiScores: VoiScore[];
+      gateScores: GateScore[];
     }
   | { type: "recommend:begin" }
   | { type: "recommend:done"; report: ResearchReport }

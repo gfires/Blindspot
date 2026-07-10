@@ -39,4 +39,3 @@ export const RESULTS_PER_QUESTION  = 6;
 
 export const MAX_LOOP_ITERATIONS   = 2;
 export const TOTAL_FIRECRAWL_BUDGET = 32;
-export const VOI_THRESHOLD         = 0.15;

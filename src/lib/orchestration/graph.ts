@@ -32,6 +32,8 @@ import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
 import { type ArmResult, toAnnotatedUsage, rollupTokens } from "./eval";
 import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET } from "../params";
+import { getActiveTrace, startTrace } from "./trace";
+import { getActiveCostTracker, startCostTracker, BudgetExceededError } from "./cost-tracker";
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
@@ -66,18 +68,31 @@ const DecompositionSchema = z.object({
  * at zero confidence and unresolved; the `questions` reducer replaces wholesale.
  */
 async function decompose(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+  const costTracker = getActiveCostTracker();
+  costTracker?.check();
+
+  const prompt = [
+    "You are the research manager scoping an investigation.",
+    `Topic: ${state.topic}`,
+    "",
+    "Break this into 3–5 distinct, researchable questions that together cover the",
+    "topic. Each question should be answerable from web evidence and target a",
+    "different facet (market, customers, competition, economics, risks, etc.).",
+  ].join("\n");
+
   const { object, usage } = await generateObject({
     model: managerModel,
     schema: DecompositionSchema,
-    prompt: [
-      "You are the research manager scoping an investigation.",
-      `Topic: ${state.topic}`,
-      "",
-      "Break this into 3–5 distinct, researchable questions that together cover the",
-      "topic. Each question should be answerable from web evidence and target a",
-      "different facet (market, customers, competition, economics, risks, etc.).",
-    ].join("\n"),
+    prompt,
   });
+
+  const annotated = toAnnotatedUsage(usage, managerModel.modelId, "decompose");
+  costTracker?.record({ model: managerModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+
+  const trace = getActiveTrace();
+  if (trace) {
+    trace.logLlmCall("decompose", { model: managerModel.modelId, prompt }, object, usage);
+  }
 
   const questions: Question[] = object.questions.map((q, i) => ({
     id: `q${i + 1}`,
@@ -89,7 +104,7 @@ async function decompose(state: ResearchStateT): Promise<Partial<ResearchStateT>
 
   return {
     questions,
-    llmCalls: [toAnnotatedUsage(usage, managerModel.modelId, "decompose")],
+    llmCalls: [annotated],
   };
 }
 
@@ -197,6 +212,9 @@ const RefineSchema = z.object({
 });
 
 async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+  const costTracker = getActiveCostTracker();
+  costTracker?.check();
+
   const open = unresolved(state);
   if (open.length === 0) return {};
 
@@ -217,22 +235,32 @@ async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
     (s) => `Question ${s.id}: ${s.text}\n  Evidence gaps: ${s.gapText || "none noted — generate diverse queries"}`,
   );
 
+  const refinePrompt = [
+    "You are a research manager refining search queries for a second pass.",
+    "The committee has reviewed initial evidence and identified gaps.",
+    "For each question below, generate 1–3 NEW, targeted search queries that",
+    "specifically address the noted evidence gaps. Do NOT repeat the original",
+    "question verbatim — instead craft queries that will surface the missing",
+    "information (specific data, counterexamples, named sources, etc.).",
+    "",
+    ...sectionText,
+    "",
+    "Return a searchQueries array for every question ID listed.",
+  ].join("\n");
+
   const { object, usage } = await generateObject({
     model: managerModel,
     schema: RefineSchema,
-    prompt: [
-      "You are a research manager refining search queries for a second pass.",
-      "The committee has reviewed initial evidence and identified gaps.",
-      "For each question below, generate 1–3 NEW, targeted search queries that",
-      "specifically address the noted evidence gaps. Do NOT repeat the original",
-      "question verbatim — instead craft queries that will surface the missing",
-      "information (specific data, counterexamples, named sources, etc.).",
-      "",
-      ...sectionText,
-      "",
-      "Return a searchQueries array for every question ID listed.",
-    ].join("\n"),
+    prompt: refinePrompt,
   });
+
+  const annotated = toAnnotatedUsage(usage, managerModel.modelId, "refine");
+  costTracker?.record({ model: managerModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+
+  const trace = getActiveTrace();
+  if (trace) {
+    trace.logLlmCall("refine", { model: managerModel.modelId, prompt: refinePrompt }, object, usage);
+  }
 
   const queryMap = new Map(object.questions.map((q) => [q.questionId, q.searchQueries]));
   const questions = state.questions.map((q) =>
@@ -241,7 +269,7 @@ async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
 
   return {
     questions,
-    llmCalls: [toAnnotatedUsage(usage, managerModel.modelId, "refine")],
+    llmCalls: [annotated],
   };
 }
 
@@ -355,19 +383,38 @@ export function compileResearchGraph() {
 }
 
 export async function runGraph(topic: string, budgetOverride?: number): Promise<ArmResult> {
+  const trace = startTrace();
+  startCostTracker();
   const graph = compileResearchGraph();
   const threadId = `run-${Date.now()}`;
   const t0 = Date.now();
 
-  const finalState: ResearchStateT = await graph.invoke(
-    { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
-    { configurable: { thread_id: threadId } },
-  );
+  let finalState: ResearchStateT;
+  let budgetExceeded = false;
+
+  try {
+    finalState = await graph.invoke(
+      { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
+      { configurable: { thread_id: threadId } },
+    );
+  } catch (err) {
+    if (err instanceof BudgetExceededError) {
+      budgetExceeded = true;
+      trace.log("budget_exceeded", { message: err.message });
+      const partial = await graph.getState({ configurable: { thread_id: threadId } });
+      finalState = partial.values as ResearchStateT;
+    } else {
+      throw err;
+    }
+  }
 
   const report = synthesizeReport(finalState);
+  if (budgetExceeded) {
+    console.log(`[budget] LLM cost cap reached — synthesizing partial report`);
+  }
 
-  return {
-    arm: "orchestrated",
+  const result = {
+    arm: "orchestrated" as const,
     topic,
     report,
     tokens: rollupTokens(finalState.llmCalls),
@@ -375,4 +422,13 @@ export async function runGraph(topic: string, budgetOverride?: number): Promise<
     firecrawlCredits: finalState.firecrawlCredits,
     durationMs: Date.now() - t0,
   };
+
+  try {
+    const tracePath = await trace.writeToDisk(topic);
+    console.log(`[trace] written to ${tracePath}`);
+  } catch (err) {
+    console.error("[trace] failed to write:", err);
+  }
+
+  return result;
 }

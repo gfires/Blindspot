@@ -39,4 +39,10 @@ export const SEARCH_CANDIDATES_PER_QUESTION = 10;
 // -- Orchestration: gate / budget --------------------------------------------
 
 export const MAX_LOOP_ITERATIONS   = 5;
-export const TOTAL_FIRECRAWL_BUDGET = 32;
+export const TOTAL_FIRECRAWL_BUDGET = 80;
+export const MAX_RUN_COST_USD      = 2.00;
+
+// -- Orchestration: token efficiency -----------------------------------------
+
+export const MAX_EVIDENCE_CHARS_PER_AGENT = 30_000;
+export const MAX_CONCLUSION_CHARS    = 400;

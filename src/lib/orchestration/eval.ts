@@ -18,9 +18,10 @@ import type { ScanEvent, TokenUsage } from "../events";
 
 /** Cost per million tokens by model (USD). Update when model pricing changes. */
 const MODEL_COST: Record<string, { input: number; output: number }> = {
-  "gpt-4o":         { input: 2.50, output: 10.00 },
-  "gpt-4o-mini":    { input: 0.15, output: 0.60 },
-  "claude-sonnet-5": { input: 3.00, output: 15.00 },
+  "gpt-4o":                       { input: 2.50, output: 10.00 },
+  "gpt-4o-mini":                  { input: 0.15, output:  0.60 },
+  "claude-sonnet-5":              { input: 2.00, output: 10.00 },
+  "claude-haiku-4-5-20251001":    { input: 1.00, output:  5.00 },
 };
 
 export function estimateCostUsd(usage: TokenUsage): number {

@@ -55,6 +55,7 @@ Integration fixes applied during graph merge:
 | `src/app/api/research/orchestrated/route.ts` | SSE endpoint for orchestrated research |
 | `src/components/research/` | Visualization components (PipelineGraph, AgentPanel, etc.) |
 | `scripts/run-arm.ts` | Single-arm runner (baseline or orchestrated, accepts --budget) |
+| `src/lib/orchestration/trace.ts` | TraceLogger — exhaustive run trace (prompts, responses, state) |
 
 ## Build & check
 

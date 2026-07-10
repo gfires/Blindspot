@@ -17,6 +17,9 @@ next-env.d.ts
 data/scrape-cache.json
 data/search-cache.json
 
+# trace output — large JSON files from orchestrated runs
+trace-output/
+
 # env — never commit real keys
 .env
 .env.local

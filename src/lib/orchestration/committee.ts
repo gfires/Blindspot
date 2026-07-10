@@ -17,11 +17,14 @@
  * adversarial check is not just a re-prompt of the same weights.
  */
 import { generateObject } from "ai";
-import { ClaimSchema, type Claim, type AgentRoleT } from "../schemas/claim";
+import { ClaimOutputSchema, type Claim, type AgentRoleT } from "../schemas/claim";
 import type { Evidence } from "../schemas/evidence";
 import type { Question } from "../schemas/state";
 import { modelForRole } from "../models/provider";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
+import { getActiveTrace } from "./trace";
+import { getActiveCostTracker } from "./cost-tracker";
+import { MAX_EVIDENCE_CHARS_PER_AGENT } from "../params";
 
 /**
  * Calibration rules appended to every role prompt. Kept identical across roles so that a
@@ -131,17 +134,19 @@ robust — but only say so if the evidence forced you there against your own eff
 
 const ROLES: AgentRoleT[] = ["historian", "operator", "investor", "skeptic"];
 
-/** Render the relevant evidence as an id-labeled block the model can cite by id. */
 function formatEvidence(evidence: Evidence[]): string {
   if (evidence.length === 0) {
     return "(no evidence was retrieved for this question yet — you must reflect that in low confidence)";
   }
-  return evidence
-    .map(
-      (e) =>
-        `[${e.id}] ${e.title}\n  url: ${e.url}\n  snippet: ${e.snippet}\n\n${e.content}`,
-    )
-    .join("\n\n---\n\n");
+  let totalChars = 0;
+  const blocks: string[] = [];
+  for (const e of evidence) {
+    const block = `[${e.id}] ${e.title}\n  url: ${e.url}\n  snippet: ${e.snippet}\n\n${e.content}`;
+    if (totalChars + block.length > MAX_EVIDENCE_CHARS_PER_AGENT && blocks.length > 0) break;
+    blocks.push(block);
+    totalChars += block.length;
+  }
+  return blocks.join("\n\n---\n\n");
 }
 
 /** Build the per-role user prompt: the question, the calibration rules, and the citable evidence. */
@@ -154,9 +159,9 @@ function buildUserPrompt(question: Question, evidence: Evidence[]): string {
     "",
     CONFIDENCE_CALIBRATION,
     "",
-    "Render your independent Claim now. Fill conclusion, confidence, supportingEvidenceIds,",
-    "contradictingEvidenceIds, and missingEvidence. The id, questionId, agentRole, and loopIteration",
-    "fields are assigned by the system — leave them as empty strings / 0.",
+    "Render your Claim now. Keep conclusion to 2-3 sentences (under 400 chars) — be direct.",
+    "List up to 3 specific evidence gaps in missingEvidence (each under 100 chars).",
+    "Only fill: conclusion, confidence, supportingEvidenceIds, contradictingEvidenceIds, missingEvidence.",
   ].join("\n");
 }
 
@@ -179,15 +184,27 @@ export async function runCommittee(
 
   const results = await Promise.all(
     ROLES.map(async (role): Promise<{ claim: Claim; usage: AnnotatedUsage }> => {
+      const costTracker = getActiveCostTracker();
+      costTracker?.check();
+
       const model = modelForRole(role);
+      const system = ROLE_SYSTEM_PROMPTS[role];
+      const prompt = buildUserPrompt(question, evidence);
       const { object, usage } = await generateObject({
         model,
-        schema: ClaimSchema,
-        system: ROLE_SYSTEM_PROMPTS[role],
-        prompt: buildUserPrompt(question, evidence),
+        schema: ClaimOutputSchema,
+        system,
+        prompt,
       });
 
-      // Stamp the authoritative, system-owned fields — never trust the model for identity/bookkeeping.
+      const annotated = toAnnotatedUsage(usage, model.modelId, `committee:${role}`);
+      costTracker?.record({ model: model.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+
+      const trace = getActiveTrace();
+      if (trace) {
+        trace.logLlmCall(`committee:${role}`, { model: model.modelId, prompt, system }, object, usage);
+      }
+
       const claim: Claim = {
         ...object,
         id: `${question.id}:${role}:${loopIteration}`,
@@ -196,7 +213,7 @@ export async function runCommittee(
         loopIteration,
       };
 
-      return { claim, usage: toAnnotatedUsage(usage, model.modelId, `committee:${role}`) };
+      return { claim, usage: annotated };
     }),
   );
 

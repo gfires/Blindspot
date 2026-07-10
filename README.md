@@ -84,11 +84,11 @@ industry
 topic
    │
    ▼  DECOMPOSE                                        src/lib/orchestration/graph.ts
-   │  Manager (Claude Sonnet 5) breaks topic into 3–5 research questions.
+   │  Manager (Haiku 4.5) breaks topic into 3–5 research questions.
    │
    ▼  RETRIEVE                                         src/lib/evidence/firecrawl.ts
    │  search() fetches web evidence for each unresolved question in parallel.
-   │  Evidence is append-only across loops.
+   │  Evidence is append-only across loops. Query count capped to ¼ remaining budget.
    │
    ▼  DEBATE                                           src/lib/orchestration/committee.ts
    │  Four role-agents each produce an independent Claim per question:
@@ -96,13 +96,22 @@ topic
    │    Operator  (Claude Sonnet 5) — wants friction
    │    Investor  (Claude Sonnet 5) — wants returns
    │    Skeptic   (GPT-4o)          — finds failure modes
+   │  Each agent receives full scraped page content, not just snippets.
    │  Confidence is calibrated identically across all four roles.
    │
    ▼  GATE                                             src/lib/orchestration/gate.ts
-   │  Scores each question's value-of-information:
-   │    VOI = disagreement × recommendation-sensitivity × tractability
-   │  Questions below VOI_THRESHOLD are marked resolved. If any remain
-   │  and budget > 0, loop back to RETRIEVE. Otherwise →
+   │  LLM classifier (GPT-4o-mini) decides per-question whether to retrieve more.
+   │  Uses computed signals (gapCount, confidenceSpread) + claim summaries.
+   │  Decision rules are rule-based in the prompt (not vibe floats):
+   │    - First pass defaults YES unless agents agree and no gaps named
+   │    - 3+ overlapping gaps → YES, opposing conclusions → YES
+   │    - Agreement with vague gaps → NO
+   │    - Low budget (≤2) → only highest-gap question
+   │  If retrieve count exceeds remaining budget, clamped to top-N by gapCount.
+   │
+   ▼  REFINE (loop only)                               src/lib/orchestration/graph.ts
+   │  Manager (Haiku 4.5) generates 1–3 targeted search queries per unresolved
+   │  question from the committee's missingEvidence gaps. Skips if no gaps identified.
    │
    ▼  RECOMMEND                                        src/lib/orchestration/graph.ts
    Synthesize ResearchReport: per-question confidence, evidence graph,
@@ -139,11 +148,66 @@ All tunables live in [`src/lib/params.ts`](src/lib/params.ts):
 | `MIN_QUESTIONS` | `3` | Minimum questions from decomposition |
 | `MAX_QUESTIONS` | `5` | Maximum questions from decomposition |
 | `RESULTS_PER_QUESTION` | `6` | Web results fetched per question per loop |
-| `MAX_LOOP_ITERATIONS` | `2` | Hard cap on retrieve→debate→gate loops |
-| `TOTAL_FIRECRAWL_BUDGET` | `32` | Hard cap on total Firecrawl calls |
-| `VOI_THRESHOLD` | `0.15` | Minimum VOI score to justify another retrieval |
+| `SEARCH_CANDIDATES_PER_QUESTION` | `10` | Raw search hits fetched per query before filtering |
+| `MAX_LOOP_ITERATIONS` | `5` | Hard cap on retrieve→debate→gate loops |
+| `TOTAL_FIRECRAWL_BUDGET` | `80` | Hard cap on total Firecrawl credits |
+| `MAX_RUN_COST_USD` | `2.00` | Global LLM cost cap — run halts and synthesizes partial report |
+| `MAX_EVIDENCE_CHARS_PER_AGENT` | `30000` | Per-agent evidence context window cap (chars) |
+| `MAX_CONCLUSION_CHARS` | `400` | Max length for committee claim conclusions |
 
 Model assignments for committee roles are in [`src/lib/models/provider.ts`](src/lib/models/provider.ts).
+
+### Budget model
+
+Two independent budget systems keep runs in check:
+
+**Firecrawl credits** (`TOTAL_FIRECRAWL_BUDGET`, default 80) — denominated in Firecrawl credits
+(search = 2 credits, scrape = 1 credit per page):
+- `budgetRemaining` / `budgetSpent` tracked in `ResearchState`, decremented by the `retrieve` node.
+- `retrieve` caps query count to `floor(budgetRemaining / 4)` so search alone doesn't blow the budget.
+- `gate` clamps: if the LLM requests more retrievals than budget allows, only top-N by `gapCount` proceed.
+
+**LLM cost cap** (`MAX_RUN_COST_USD`, default $2.00) — a global USD ceiling enforced by a
+process-level `CostTracker` (`cost-tracker.ts`). Every `generateObject` call checks the cap
+before executing and records its cost after. If the cap is hit mid-run, a `BudgetExceededError`
+is caught — the run immediately synthesizes a partial report from whatever state has accumulated,
+writes the trace, and returns results to the UI.
+
+**Token efficiency** — output tokens are the expensive side ($15/M for Sonnet 5, $10/M for GPT-4o):
+- Committee agents use `ClaimOutputSchema` (5 fields) instead of the full `ClaimSchema` (9 fields),
+  eliminating system-owned fields (`id`, `questionId`, `agentRole`, `loopIteration`) from output.
+- Conclusions capped at 400 chars; `missingEvidence` capped at 3 items of 100 chars each.
+- Evidence content truncated to 2000 chars per source, total capped at `MAX_EVIDENCE_CHARS_PER_AGENT`
+  (30k chars) per agent call — prevents ballooning input on evidence-rich questions.
+
+Hard stops: `MAX_LOOP_ITERATIONS` (5), Firecrawl budget exhaustion, or LLM cost cap — whichever hits first.
+
+### Real-time visualization
+
+The orchestrated arm streams `ResearchEvent`s over SSE from `/api/research/orchestrated`.
+The frontend `useResearchStream` hook feeds a pure reducer that builds up the full UI state.
+Live components show:
+
+- **Pipeline graph** — SVG node graph with loop arc, active/completed node highlighting
+- **Question tracker** — per-question status (pending → retrieving → debating → resolved/looping) with confidence bars
+- **Agent panel** — 4-agent debate claims as they arrive
+- **Evidence feed** — streaming source URLs with titles
+- **Gate decision panel** — per-question retrieve/resolve decisions with gapCount and confidenceSpread
+- **Cost counter** — running LLM token costs and Firecrawl credit spend
+
+### Trace logging
+
+Every orchestrated run writes an exhaustive trace file to `trace-output/<topic>-<timestamp>.trace.json`.
+The trace captures everything that happened during the run:
+
+- **Every LLM call** — exact prompts (system + user), full structured responses, token usage
+- **Every Firecrawl call** — query, parameters, result count
+- **Every SSE event** — the complete event stream as sent to the frontend
+- **State snapshots** — node-level snapshots of question/evidence/claim counts, budget, loop iteration
+- **Final state summary** — total counts, duration, budget spent/remaining, convergence status
+- **Timestamps** — absolute ISO timestamps and elapsed-ms on every entry
+
+Trace files can be large (tens of MB for multi-loop runs). They are gitignored.
 
 ---
 
@@ -170,44 +234,60 @@ sub-scores. Solution maturity is inverted (mature = less opportunity).
 src/
   app/
     layout.tsx                    fonts + metadata
-    page.tsx                      single page: idle → scanning → report
+    page.tsx                      mode toggle (scan vs research), idle → progress → report
     globals.css                   theme + terminal chrome
     api/
       scan/route.ts               baseline SSE streaming orchestrator
-      research/baseline/route.ts  baseline API endpoint
+      research/
+        orchestrated/route.ts     orchestrated SSE endpoint (POST, streams ResearchEvents)
   lib/
     params.ts                     all tunable parameters (baseline + orchestration)
+    research-events.ts            ResearchEvent union type (SSE wire protocol)
+    useResearchStream.ts          client hook + pure reducer for orchestrated research SSE
     schemas/
-      state.ts                    ResearchState (LangGraph Annotation)
+      state.ts                    ResearchState (LangGraph Annotation) + Question type
       evidence.ts                 Evidence zod schema
-      claim.ts                    Claim zod schema
+      claim.ts                    Claim zod schema + AgentRole enum
     models/
       provider.ts                 model assignments per agent role
     evidence/
       firecrawl.ts                search() + explore() — Firecrawl search/scrape
       store.ts                    in-memory Evidence store + contentHash
     orchestration/
-      graph.ts                    LangGraph StateGraph + runGraph() + synthesizeReport()
-      committee.ts                runCommittee() — four-role deliberation
-      gate.ts                     allocateBudget() — VOI scoring + loop control
-      eval.ts                     ArmResult types + runBaseline()
+      graph.ts                    StateGraph (decompose→retrieve→debate→gate→refine→recommend)
+      graph-stream.ts             runGraphStreaming() — streams ResearchEvents from graph nodes
+      committee.ts                runCommittee() — four-role deliberation with full content
+      gate.ts                     allocateBudget() — LLM classifier + budget clamping
+      eval.ts                     ArmResult types + runBaseline() + token tracking
+      trace.ts                    TraceLogger — exhaustive run trace (prompts, responses, state)
     triage.ts                     intent adaptation + triage scoring + selection
     analyze.ts                    analysis prompt + LLM call + report assembly
     scoring.ts                    deterministic 0–100 score from sub-scores
     schema.ts                     ScanReport zod schema (baseline report shape)
-    events.ts                     SSE event union + TokenUsage type
-    useScanStream.ts              client hook: consume SSE → UI state
+    events.ts                     SSE event union + TokenUsage type (baseline)
+    useScanStream.ts              client hook: consume SSE → UI state (baseline)
     intents.ts                    static intent templates (fallback)
     blocklist.ts                  persistent scrape-hostile domain list
     scrape-cache.ts               persistent URL→content cache
     search-cache.ts               persistent query→results cache
     format.ts                     small pure helpers
     exportPdf.ts                  client-side PDF export
-  components/                     ScanInput, ScanProgress, ReportView, Gauge, ...
+  components/
+    research/
+      ResearchProgress.tsx        orchestrated run progress container
+      PipelineGraph.tsx           SVG pipeline graph with loop arc
+      QuestionTracker.tsx         per-question status + confidence bars
+      AgentPanel.tsx              4-agent debate claims display
+      EvidenceFeed.tsx            streaming evidence source feed
+      GateDecisionPanel.tsx       gate decision table with scores
+      CostCounter.tsx             live LLM + Firecrawl cost counter
+      ResearchReportView.tsx      final research report display
+    ScanInput.tsx, ScanProgress.tsx, ReportView.tsx, Gauge.tsx, ...
 scripts/
   compare-arms.ts                 A/B comparison harness (accepts --budget)
   run-arm.ts                      single-arm runner (baseline or orchestrated, accepts --budget)
 test/                             vitest unit tests
+trace-output/                     exhaustive trace JSON files from orchestrated runs (gitignored)
 data/
   blocklist.json                  domains that block scrapers
   scrape-cache.json               cached scrape results (gitignored)

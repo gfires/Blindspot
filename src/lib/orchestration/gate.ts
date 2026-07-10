@@ -5,6 +5,8 @@ import type { ResearchStateT } from "../schemas/state";
 import { MAX_LOOP_ITERATIONS } from "../params";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import type { GateScore } from "../research-events";
+import { getActiveTrace } from "./trace";
+import { getActiveCostTracker } from "./cost-tracker";
 
 const GateDecisionSchema = z.object({
   decisions: z.array(z.object({
@@ -62,12 +64,24 @@ ${sections.join("\n\n")}
 
 Return a decision for every question ID listed above.`;
 
+  const costTracker = getActiveCostTracker();
+  costTracker?.check();
+
   const { object, usage } = await generateObject({
     model: gateClassifierModel,
     schema: GateDecisionSchema,
     prompt,
   });
-  const callUsage = [toAnnotatedUsage(usage, gateClassifierModel.modelId, "gate")];
+
+  const annotated = toAnnotatedUsage(usage, gateClassifierModel.modelId, "gate");
+  costTracker?.record({ model: gateClassifierModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+
+  const trace = getActiveTrace();
+  if (trace) {
+    trace.logLlmCall("gate", { model: gateClassifierModel.modelId, prompt }, object, usage);
+  }
+
+  const callUsage = [annotated];
 
   const signalMap = new Map(questionSignals.map(qs => [qs.question.id, qs]));
   const validIds = new Set(questionSignals.map(qs => qs.question.id));

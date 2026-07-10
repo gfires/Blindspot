@@ -29,6 +29,7 @@ import { getSearchCache, setSearchCache } from "../search-cache";
 import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR, SEARCH_CANDIDATES_PER_QUESTION } from "../params";
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "../triage";
 import { type Evidence, contentHash } from "./store";
+import { getActiveTrace } from "../orchestration/trace";
 
 
 /** A search hit before it's promoted to a citable Source. */
@@ -397,6 +398,10 @@ export async function search(
                   title: d.metadata?.title || d.title || domainOf(d.url as string),
                   snippet: d.description || d.metadata?.description || "",
                 }));
+              const trace = getActiveTrace();
+              if (trace) {
+                trace.logFirecrawlCall("search", { query, limit: fetchLimit }, hits.length);
+              }
               void setSearchCache(query, hits);
               return hits;
             })();

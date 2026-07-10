@@ -14,7 +14,6 @@ export function modelForRole(role: AgentRoleT) {
   return ROLE_MODEL[role];
 }
 
-// manager + gate use a cheap/fast model for triage-y work
-export const managerModel = anthropic("claude-sonnet-5");
+export const managerModel = anthropic("claude-haiku-4-5-20251001");
 export const gateModel = anthropic("claude-sonnet-5");
 export const gateClassifierModel = openai("gpt-4o-mini");

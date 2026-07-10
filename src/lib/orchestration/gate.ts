@@ -70,14 +70,35 @@ Return a decision for every question ID listed above.`;
   const callUsage = [toAnnotatedUsage(usage, gateClassifierModel.modelId, "gate")];
 
   const signalMap = new Map(questionSignals.map(qs => [qs.question.id, qs]));
+  const validIds = new Set(questionSignals.map(qs => qs.question.id));
 
-  const gateScores: GateScore[] = object.decisions.map(d => ({
+  const validDecisions = object.decisions.filter(d => validIds.has(d.questionId));
+
+  const missingIds = [...validIds].filter(id => !validDecisions.some(d => d.questionId === id));
+  for (const id of missingIds) {
+    validDecisions.push({ questionId: id, retrieve: true, reason: "no LLM decision — defaulting to retrieve" });
+  }
+
+  let gateScores: GateScore[] = validDecisions.map(d => ({
     questionId: d.questionId,
     retrieve: d.retrieve,
     gapCount: signalMap.get(d.questionId)?.gapCount ?? 0,
     confidenceSpread: signalMap.get(d.questionId)?.confidenceSpread ?? 0,
     reason: d.reason,
   }));
+
+  const retrieveCount = gateScores.filter(s => s.retrieve).length;
+  if (retrieveCount > state.budgetRemaining) {
+    const sorted = gateScores
+      .filter(s => s.retrieve)
+      .sort((a, b) => b.gapCount - a.gapCount);
+    const keepIds = new Set(sorted.slice(0, state.budgetRemaining).map(s => s.questionId));
+    gateScores = gateScores.map(s =>
+      s.retrieve && !keepIds.has(s.questionId)
+        ? { ...s, retrieve: false, reason: "clamped — budget insufficient" }
+        : s
+    );
+  }
 
   const continueLoop = gateScores.some(d => d.retrieve);
 

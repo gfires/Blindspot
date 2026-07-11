@@ -61,4 +61,5 @@ Key routing rules:
 ## Design principles
 
 - **Enforce in code, not prompts.** If a constraint can be checked or clamped programmatically, do it — don't rely on the LLM obeying a prompt instruction. Prompts are hints; code is guarantees. Examples: budget caps, enum membership, ID validation, range clamping.
+- **No hard caps in LLM output schemas.** Never put `.min()`/`.max()` (lengths, counts, numeric ranges) on Zod schemas passed to `generateText`/`Output.object` — providers strip unsupported JSON-schema keywords, so the model never sees the limit, and client-side validation turns a slightly-long response into a run-killing `NoOutputGeneratedError`. Steer with `.describe()` hints; clamp in code after generation where the bound actually matters.
 - **No vibe floats.** Don't ask LLMs to produce made-up 0-1 scores (confidence, tractability, sensitivity) and then do math on them. The numbers look precise but are arbitrary. Prefer binary/categorical decisions from the LLM and compute quantitative signals from real data (gap counts, confidence spreads, evidence counts).

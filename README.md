@@ -176,7 +176,7 @@ Two independent budget systems keep runs in check:
 `CostTracker` (`cost-tracker.ts`). The tracker lives in `AsyncLocalStorage` keyed to each run's
 async call-tree (via `runWithCostTracker`), **not** a module global — so two concurrent runs (two
 browser tabs, or compare-arms running both arms) each see their own tracker and never clobber each
-other's spend. Every `generateObject` call checks the cap before executing and records its *exact*
+other's spend. Every structured-output LLM call checks the cap before executing and records its *exact*
 cost (from the call's real `usage`) after — no pre-call cost estimation. Because the graph fans out
 ~20 committee calls at once, a single fan-out wave can overshoot the cap by up to one super-step's
 spend before any call settles; the next `check()` then halts the run. We accept that bounded, fully

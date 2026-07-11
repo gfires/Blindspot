@@ -22,7 +22,7 @@
  * `runCommittee()` (committee agent) are implemented on sibling branches. The
  * signatures consumed here are the integration contract; see their imports below.
  */
-import { StateGraph, MemorySaver, START, END } from "@langchain/langgraph";
+import { StateGraph, MemorySaver, START, END, type LangGraphRunnableConfig } from "@langchain/langgraph";
 import { generateObject } from "ai";
 import { z } from "zod";
 
@@ -123,7 +123,10 @@ const unresolved = (state: ResearchStateT): Question[] =>
  * its `sourceQuery` and the current `loopIteration`. The `evidence` reducer is
  * append-only, so we return only the new items.
  */
-async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+async function retrieve(
+  state: ResearchStateT,
+  config?: LangGraphRunnableConfig,
+): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
   if (questions.length === 0) return {};
   let queries = questions.flatMap((q) =>
@@ -132,10 +135,14 @@ async function retrieve(state: ResearchStateT): Promise<Partial<ResearchStateT>>
   // Each search query costs ~2 credits; cap so search alone doesn't blow the budget.
   const maxQueries = Math.max(1, Math.floor(state.budgetRemaining / 4));
   if (queries.length > maxQueries) queries = queries.slice(0, maxQueries);
+  // Under streamMode "custom", config.writer forwards live search/scrape progress
+  // to the SSE transport (graph-stream.ts). Absent (graph.invoke) → no emission.
+  const writer = config?.writer;
   const { evidence, searchCredits, scrapeCredits } = await search(
     queries,
     RESULTS_PER_QUESTION,
     state.loopIteration,
+    writer ? (progress) => writer({ node: "retrieve", progress }) : undefined,
   );
   const totalCredits = searchCredits + scrapeCredits;
   // budgetRemaining/budgetSpent reducers are ADDITIVE — return signed deltas, not

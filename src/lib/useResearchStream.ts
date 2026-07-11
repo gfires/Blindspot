@@ -162,6 +162,18 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ],
       };
 
+    case "retrieve:progress": {
+      const line = `$ ${ev.message}`;
+      // Scrape progress is a counter ("scraping pages… 12/28") — overwrite the
+      // previous counter line instead of appending 28 near-identical lines.
+      const last = state.trace[state.trace.length - 1];
+      const trace =
+        ev.kind === "scrape" && last?.startsWith("$ scraping pages…")
+          ? [...state.trace.slice(0, -1), line]
+          : [...state.trace, line];
+      return { ...state, phase, trace };
+    }
+
     case "retrieve:evidence": {
       const newEvByQ = { ...state.evidenceByQuestion };
       const qKey = ev.questionId;

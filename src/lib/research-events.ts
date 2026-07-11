@@ -19,6 +19,7 @@ export type ResearchEvent =
   | { type: "decompose:begin" }
   | { type: "decompose:done"; questions: Question[]; usage: AnnotatedUsage }
   | { type: "retrieve:begin"; loopIteration: number; questionIds: string[] }
+  | { type: "retrieve:progress"; loopIteration: number; kind: "search" | "scrape"; message: string }
   | { type: "retrieve:evidence"; evidence: Evidence; questionId: string }
   | { type: "retrieve:done"; loopIteration: number; evidenceCount: number; firecrawlCalls: number }
   | { type: "debate:begin"; loopIteration: number; questionIds: string[] }
@@ -47,6 +48,7 @@ export function researchPhaseFor(type: ResearchEvent["type"]): ResearchPhase {
     case "decompose:done":
       return "decompose";
     case "retrieve:begin":
+    case "retrieve:progress":
     case "retrieve:evidence":
     case "retrieve:done":
       return "retrieve";

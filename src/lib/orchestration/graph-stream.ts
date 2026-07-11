@@ -3,6 +3,7 @@ import { rollupTokens } from "./eval";
 import type { ArmResult } from "./eval";
 import type { ResearchStateT, Question } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
+import type { SearchProgress } from "../evidence/firecrawl";
 import type { Claim } from "../schemas/claim";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
@@ -37,35 +38,71 @@ async function runGraphStreamingInner(
   };
 
   send({ type: "research:start", topic });
+  // Sent before graph.stream(): that await doesn't resolve until the graph has
+  // already begun executing, which would delay the first begin event by seconds.
+  send({ type: "decompose:begin" });
 
+  const initialBudget = budgetOverride ?? TOTAL_FIRECRAWL_BUDGET;
   const stream = await graph.stream(
-    { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
-    { configurable: { thread_id: threadId }, streamMode: "updates" as const },
+    { topic, budgetRemaining: initialBudget },
+    // "updates" fires only on node COMPLETION, so begin events are emitted eagerly
+    // below (each node's successor is deterministic). "custom" carries live
+    // search/scrape progress written by the retrieve node's config.writer.
+    { configurable: { thread_id: threadId }, streamMode: ["updates", "custom"] as const },
   );
 
   let allLlmCalls: AnnotatedUsage[] = [];
   let totalFirecrawlCalls = 0;
   let totalFirecrawlCredits = 0;
   let currentLoopIteration = 0;
-  const seenNodes = new Set<string>();
+  // Mirror of graph state needed to build eager begin events: the routing decision
+  // after gate depends on budgetRemaining (see routeAfterGate), and begin payloads
+  // need the current question list. Both are reconstructed from node outputs —
+  // retrieve returns budget DELTAS (additive reducer), decompose/gate/refine return
+  // the full question list.
+  let currentQuestions: Question[] = [];
+  let budgetRemaining = initialBudget;
+  const unresolvedIds = () => currentQuestions.filter(q => !q.resolved).map(q => q.id);
 
   let budgetExceeded = false;
 
   try {
-    for await (const update of stream) {
+    for await (const chunk of stream as AsyncIterable<[string, unknown]>) {
+      const [mode, payload] = chunk;
+
+      if (mode === "custom") {
+        const custom = payload as { node?: string; progress?: SearchProgress };
+        if (custom?.node === "retrieve" && custom.progress) {
+          const p = custom.progress;
+          send(
+            p.kind === "search"
+              ? {
+                  type: "retrieve:progress",
+                  loopIteration: currentLoopIteration,
+                  kind: "search",
+                  message: `searched "${p.query.slice(0, 80)}" — ${p.hits} hits${p.cached ? " (cached)" : ""}`,
+                }
+              : {
+                  type: "retrieve:progress",
+                  loopIteration: currentLoopIteration,
+                  kind: "scrape",
+                  message: `scraping pages… ${p.done}/${p.total}`,
+                },
+          );
+        }
+        continue;
+      }
+
+      const update = payload as Record<string, unknown>;
       for (const [nodeName, nodeOutput] of Object.entries(update)) {
         const output = nodeOutput as Partial<ResearchStateT>;
 
         trace.logStateSnapshot(nodeName, output);
 
-        if (!seenNodes.has(nodeName)) {
-          seenNodes.add(nodeName);
-          sendBeginEvent(send, nodeName, currentLoopIteration, output);
-        }
-
         switch (nodeName) {
           case "decompose": {
             const questions = (output.questions ?? []) as Question[];
+            currentQuestions = questions;
             const usage = output.llmCalls?.[0];
             if (usage) {
               allLlmCalls.push(usage);
@@ -76,6 +113,8 @@ async function runGraphStreamingInner(
               questions,
               usage: usage ?? { model: "", promptTokens: 0, completionTokens: 0, label: "decompose", costUsd: 0 },
             });
+            // Next node is deterministic: decompose → retrieve.
+            send({ type: "retrieve:begin", loopIteration: currentLoopIteration, questionIds: unresolvedIds() });
             break;
           }
 
@@ -85,6 +124,9 @@ async function runGraphStreamingInner(
             const credits = (output.firecrawlCredits ?? 0) as number;
             totalFirecrawlCalls += calls;
             totalFirecrawlCredits += credits;
+            // retrieve returns budget DELTAS (additive reducer) — accumulate to
+            // mirror state.budgetRemaining for the post-gate routing prediction.
+            budgetRemaining += (output.budgetRemaining ?? 0) as number;
 
             for (const ev of evidence) {
               send({ type: "retrieve:evidence", evidence: ev, questionId: ev.sourceQuery });
@@ -96,6 +138,8 @@ async function runGraphStreamingInner(
               evidenceCount: evidence.length,
               firecrawlCalls: calls,
             });
+            // Next node is deterministic: retrieve → debate.
+            send({ type: "debate:begin", loopIteration: currentLoopIteration, questionIds: unresolvedIds() });
             break;
           }
 
@@ -113,6 +157,8 @@ async function runGraphStreamingInner(
             }
 
             send({ type: "debate:done", loopIteration: currentLoopIteration, claimCount: claims.length });
+            // Next node is deterministic: debate → gate.
+            send({ type: "gate:begin", loopIteration: currentLoopIteration });
             break;
           }
 
@@ -123,6 +169,7 @@ async function runGraphStreamingInner(
             const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
             const gateScores = (output.gateScores ?? []) as GateScore[];
             allLlmCalls.push(...usages);
+            if (questions.length > 0) currentQuestions = questions;
 
             for (const u of usages) {
               send({ type: "research:usage", usage: u });
@@ -141,12 +188,13 @@ async function runGraphStreamingInner(
               gateScores,
             });
 
-            if (continueLoop) {
+            // Next node mirrors routeAfterGate exactly: refine only when the gate
+            // wants another loop AND budget remains; otherwise recommend.
+            if (continueLoop && budgetRemaining > 0) {
               currentLoopIteration = loopIteration;
-              seenNodes.delete("refine");
-              seenNodes.delete("retrieve");
-              seenNodes.delete("debate");
-              seenNodes.delete("gate");
+              send({ type: "refine:begin", loopIteration: currentLoopIteration, questionIds: unresolvedIds() });
+            } else {
+              send({ type: "recommend:begin" });
             }
             break;
           }
@@ -155,6 +203,7 @@ async function runGraphStreamingInner(
             const questions = (output.questions ?? []) as Question[];
             const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
             allLlmCalls.push(...usages);
+            if (questions.length > 0) currentQuestions = questions;
 
             for (const u of usages) {
               send({ type: "research:usage", usage: u });
@@ -169,6 +218,8 @@ async function runGraphStreamingInner(
               loopIteration: currentLoopIteration,
               refinedQueries,
             });
+            // Next node is deterministic: refine → retrieve (next loop pass).
+            send({ type: "retrieve:begin", loopIteration: currentLoopIteration, questionIds: unresolvedIds() });
             break;
           }
 
@@ -229,41 +280,4 @@ async function runGraphStreamingInner(
   }
 
   return result;
-}
-
-function sendBeginEvent(
-  send: (event: ResearchEvent) => void,
-  nodeName: string,
-  loopIteration: number,
-  output: Partial<ResearchStateT>,
-): void {
-  switch (nodeName) {
-    case "decompose":
-      send({ type: "decompose:begin" });
-      break;
-    case "retrieve": {
-      const evidence = (output.evidence ?? []) as Evidence[];
-      const questionIds = [...new Set(evidence.map(e => e.sourceQuery))];
-      send({ type: "retrieve:begin", loopIteration, questionIds });
-      break;
-    }
-    case "debate": {
-      const claims = (output.claims ?? []) as Claim[];
-      const questionIds = [...new Set(claims.map(c => c.questionId))];
-      send({ type: "debate:begin", loopIteration, questionIds });
-      break;
-    }
-    case "gate":
-      send({ type: "gate:begin", loopIteration });
-      break;
-    case "refine": {
-      const questions = (output.questions ?? []) as Question[];
-      const questionIds = questions.filter(q => !q.resolved).map(q => q.id);
-      send({ type: "refine:begin", loopIteration, questionIds });
-      break;
-    }
-    case "recommend":
-      send({ type: "recommend:begin" });
-      break;
-  }
 }

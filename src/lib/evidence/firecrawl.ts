@@ -366,10 +366,20 @@ export interface SearchResult {
   scrapeCredits: number;
 }
 
+/**
+ * Live progress from inside `search()` — lets a streaming transport show motion
+ * during the minutes-long search+scrape phase. Purely observational: emission
+ * order and content never affect the returned SearchResult.
+ */
+export type SearchProgress =
+  | { kind: "search"; query: string; hits: number; cached: boolean }
+  | { kind: "scrape"; done: number; total: number };
+
 export async function search(
   queries: string[],
   k: number,
   loopIteration: number,
+  onProgress?: (p: SearchProgress) => void,
 ): Promise<SearchResult> {
   const app = makeFirecrawl();
   const now: Clock = () => Date.now();
@@ -405,8 +415,10 @@ export async function search(
               void setSearchCache(query, hits);
               return hits;
             })();
+        onProgress?.({ kind: "search", query, hits: raw.length, cached: !!cached });
         return raw.map((h) => ({ ...h, intent: query }));
       } catch {
+        onProgress?.({ kind: "search", query, hits: 0, cached: false });
         return [];
       }
     }),
@@ -433,7 +445,17 @@ export async function search(
     blocked: blockset.has(blocklistKey(domainOf(c.url))),
   }));
 
-  const { scraped, apiCalls: scrapeCredits } = await scrapeSources(app, ranked, noop, now, nowIso);
+  // Count scrape completions (any status) for live progress; scrapeSources itself
+  // already reports every outcome through its ScanEvent callback.
+  let scrapesDone = 0;
+  const scrapeProgress = onProgress
+    ? (e: ScanEvent) => {
+        if (e.type === "scrape:done") {
+          onProgress({ kind: "scrape", done: ++scrapesDone, total: ranked.length });
+        }
+      }
+    : noop;
+  const { scraped, apiCalls: scrapeCredits } = await scrapeSources(app, ranked, scrapeProgress, now, nowIso);
 
   const withContent = scraped.filter((s) => s.content.length > 0);
 

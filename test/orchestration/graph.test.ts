@@ -36,6 +36,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     budgetRemaining: 0,
     budgetSpent: 0,
     converged: false,
+    searchedQueries: [],
     ...over,
   } as ResearchStateT;
 }

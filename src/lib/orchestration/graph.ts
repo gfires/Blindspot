@@ -45,6 +45,47 @@ import { runCommittee } from "./committee";
 import { allocateBudget } from "./gate";
 
 // ---------------------------------------------------------------------------
+// Pure helpers — exported for direct unit testing
+// ---------------------------------------------------------------------------
+
+export function scopeEvidenceToQuestions(
+  questions: Question[],
+  evidence: Evidence[],
+): Map<string, Evidence[]> {
+  const queryToQuestions = new Map<string, string[]>();
+  for (const q of questions) {
+    const queries = q.searchQueries?.length ? q.searchQueries : [q.text];
+    for (const query of queries) {
+      const owners = queryToQuestions.get(query) ?? [];
+      if (!owners.includes(q.id)) owners.push(q.id);
+      queryToQuestions.set(query, owners);
+    }
+  }
+  const byQuestion = new Map<string, Evidence[]>();
+  for (const e of evidence) {
+    const owners = queryToQuestions.get(e.sourceQuery);
+    if (!owners) continue;
+    for (const qid of owners) {
+      const bucket = byQuestion.get(qid) ?? [];
+      bucket.push(e);
+      byQuestion.set(qid, bucket);
+    }
+  }
+  return byQuestion;
+}
+
+export function queriesToSearch(
+  questions: Question[],
+  alreadySearched: string[],
+): string[] {
+  const already = new Set(alreadySearched);
+  const candidates = questions.flatMap((q) =>
+    q.searchQueries?.length ? q.searchQueries : [q.text],
+  );
+  return [...new Set(candidates)].filter((qq) => !already.has(qq));
+}
+
+// ---------------------------------------------------------------------------
 // decompose
 // ---------------------------------------------------------------------------
 
@@ -129,9 +170,8 @@ async function retrieve(
 ): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
   if (questions.length === 0) return {};
-  let queries = questions.flatMap((q) =>
-    q.searchQueries && q.searchQueries.length > 0 ? q.searchQueries : [q.text],
-  );
+  let queries = queriesToSearch(questions, state.searchedQueries);
+  if (queries.length === 0) return {};
   // Each search query costs ~2 credits; cap so search alone doesn't blow the budget.
   const maxQueries = Math.max(1, Math.floor(state.budgetRemaining / 4));
   if (queries.length > maxQueries) queries = queries.slice(0, maxQueries);
@@ -149,6 +189,7 @@ async function retrieve(
   // absolutes. Spending `totalCredits` credits: remaining goes down, spent goes up.
   return {
     evidence,
+    searchedQueries: queries,
     firecrawlCalls: queries.length,
     firecrawlCredits: totalCredits,
     budgetRemaining: -totalCredits,
@@ -166,8 +207,10 @@ async function retrieve(
  */
 async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
+  const evidenceByQuestion = scopeEvidenceToQuestions(state.questions, state.evidence);
+
   const batches = await Promise.all(
-    questions.map((q) => runCommittee(q, state.evidence)),
+    questions.map((q) => runCommittee(q, evidenceByQuestion.get(q.id) ?? [])),
   );
   const claims: Claim[] = batches.flatMap((b) => b.claims);
   const llmCalls = batches.flatMap((b) => b.usage);
@@ -280,9 +323,17 @@ async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
       .filter((q) => q.searchQueries.length > 0)
       .map((q) => [q.questionId, q.searchQueries.slice(0, 3)]),
   );
-  const questions = state.questions.map((q) =>
-    queryMap.has(q.id) ? { ...q, searchQueries: queryMap.get(q.id)! } : q,
-  );
+  // ACCUMULATE, don't replace: evidence already gathered under q.searchQueries (or
+  // q.text, for loop 0) is tagged with those exact query strings via Evidence.sourceQuery
+  // (see search()/retrieve()). debate() reconstructs question ownership from that
+  // history (scopeEvidenceToQuestions below) — overwriting searchQueries here would
+  // orphan every prior loop's evidence from all future committee calls.
+  const questions = state.questions.map((q) => {
+    const newQueries = queryMap.get(q.id);
+    if (!newQueries) return q;
+    const priorQueries = q.searchQueries && q.searchQueries.length > 0 ? q.searchQueries : [q.text];
+    return { ...q, searchQueries: [...new Set([...priorQueries, ...newQueries])] };
+  });
 
   return {
     questions,

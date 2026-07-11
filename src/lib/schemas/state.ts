@@ -51,6 +51,10 @@ export const ResearchState = Annotation.Root({
     reducer: (prev, next) => [...prev, ...next],
     default: () => [],
   }),
+  searchedQueries: Annotation<string[]>({
+    reducer: (prev, next) => [...new Set([...prev, ...next])],
+    default: () => [],
+  }),
   /** Per-question gate scores from the most recent gate evaluation. */
   gateScores: Annotation<GateScore[]>({
     reducer: (_prev, next) => next,

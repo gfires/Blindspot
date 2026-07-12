@@ -287,6 +287,10 @@ export async function runCommittee(
         model,
         output: Output.object({ schema: ClaimOutputSchema }),
         messages,
+        // buildCommitteeMessages puts the cacheable shared prefix in a `system` message so
+        // Anthropic can cache it; the SDK forbids system messages in `messages` unless we
+        // opt in here (otherwise: AI_InvalidPromptError "System messages are not allowed").
+        allowSystemInMessages: true,
         maxRetries: LLM_MAX_RETRIES,
       }),
     );

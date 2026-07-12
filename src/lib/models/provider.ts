@@ -17,3 +17,5 @@ export function modelForRole(role: AgentRoleT) {
 export const managerModel = anthropic("claude-haiku-4-5-20251001");
 export const gateModel = anthropic("claude-sonnet-5");
 export const gateClassifierModel = openai("gpt-4o-mini");
+// L2 evidence digest: cheap, fast model to compress each source before the committee.
+export const digestModel = anthropic("claude-haiku-4-5-20251001");

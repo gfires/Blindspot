@@ -96,35 +96,27 @@ describe("splitEvidence", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildUserPrompt", () => {
-  it("loop-0 / no prior claim: renders full evidence content, no prior-claim block", () => {
-    const prompt = buildUserPrompt(q("q1"), [ev("a", 0), ev("b", 0)], 0);
+  const BLOCK = "[e-1] Title (example.com)\n  digest summary line";
+
+  it("no prior claim: passes the evidence block through, no prior-claim block", () => {
+    const prompt = buildUserPrompt(q("q1"), BLOCK);
     expect(prompt).toContain("EVIDENCE — cite only by the bracketed id");
-    expect(prompt).toContain("FULL CONTENT for a");
-    expect(prompt).toContain("FULL CONTENT for b");
+    expect(prompt).toContain(BLOCK);
+    expect(prompt).toContain("Render your Claim now");
     expect(prompt).not.toContain("YOUR PRIOR CLAIM");
-    expect(prompt).not.toContain("NEW EVIDENCE this round");
+    expect(prompt).not.toContain("UPDATED Claim");
   });
 
-  it("re-debate: fresh evidence gets full text, prior evidence collapses to an id-index", () => {
-    const fresh = ev("fresh", 1, "e-fresh");
-    const stale = ev("stale", 0, "e-stale");
+  it("re-debate: keeps the evidence block and adds the role's prior claim to update", () => {
     const prior = claim("q1", { loopIteration: 0 });
-    const prompt = buildUserPrompt(q("q1"), [stale, fresh], 1, prior);
+    const prompt = buildUserPrompt(q("q1"), BLOCK, prior);
 
-    // Fresh evidence: full content present. Prior evidence: id-index one-liner, NOT content.
-    expect(prompt).toContain("NEW EVIDENCE this round");
-    expect(prompt).toContain("FULL CONTENT for fresh");
-    expect(prompt).toContain("[e-stale]");
-    expect(prompt).not.toContain("FULL CONTENT for stale");
-
-    // Both ids stay citable.
-    expect(prompt).toContain("[e-fresh]");
-    expect(prompt).toContain("[e-stale]");
-
-    // Prior-claim block with the instruction to update it.
+    expect(prompt).toContain(BLOCK);
+    // Prior-claim block with the instruction to update it, not restate it.
     expect(prompt).toContain("YOUR PRIOR CLAIM");
     expect(prompt).toContain("prior conclusion text");
     expect(prompt).toContain("0.42");
     expect(prompt).toContain("need pricing data");
+    expect(prompt).toContain("Render your UPDATED Claim now");
   });
 });

@@ -33,6 +33,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     llmCalls: [],
     searchedQueries: [],
     gateScores: [],
+    digests: {},
     ...over,
   };
 }

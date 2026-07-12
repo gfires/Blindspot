@@ -2,7 +2,25 @@ import { Annotation } from "@langchain/langgraph";
 import type { Evidence } from "./evidence";
 import type { Claim } from "./claim";
 import type { AnnotatedUsage } from "../orchestration/eval";
+import type { DigestItem } from "../orchestration/digest";
 import type { GateScore } from "../research-events";
+
+/**
+ * Reducer for the per-question digest channel: append this loop's fresh digest items onto
+ * whatever a question already has, per questionId, leaving other questions untouched. Fresh
+ * evidence is digested at most once (the debate node never re-digests old evidence), so
+ * appending can't duplicate. Exported for direct unit testing.
+ */
+export function mergeDigests(
+  prev: Record<string, DigestItem[]>,
+  next: Record<string, DigestItem[]>,
+): Record<string, DigestItem[]> {
+  const merged: Record<string, DigestItem[]> = { ...prev };
+  for (const [questionId, items] of Object.entries(next)) {
+    merged[questionId] = [...(merged[questionId] ?? []), ...items];
+  }
+  return merged;
+}
 
 export interface Question {
   id: string;
@@ -65,6 +83,11 @@ export const ResearchState = Annotation.Root({
   gateScores: Annotation<GateScore[]>({
     reducer: (_prev, next) => next,
     default: () => [],
+  }),
+  /** Per-question evidence digests, accumulated across loops (see mergeDigests). */
+  digests: Annotation<Record<string, DigestItem[]>>({
+    reducer: mergeDigests,
+    default: () => ({}),
   }),
 });
 export type ResearchStateT = typeof ResearchState.State;

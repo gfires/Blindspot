@@ -30,8 +30,8 @@ import { ResearchState, type ResearchStateT, type Question } from "../schemas/st
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
-import { type ArmResult, toAnnotatedUsage, rollupTokens } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
+import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens } from "./eval";
+import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, DIGEST_ENABLED } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 
@@ -40,7 +40,9 @@ import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from ".
 import { search } from "../evidence/firecrawl";
 // committee.ts: run the multi-role committee over a question + evidence → Claims.
 // (committee derives the loop iteration from the evidence's own loopIteration.)
-import { runCommittee } from "./committee";
+import { runCommittee, splitEvidence } from "./committee";
+// digest.ts: compress each question's fresh evidence with a cheap Haiku pass (L2).
+import { digestEvidence, type DigestItem } from "./digest";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
 import { allocateBudget } from "./gate";
 
@@ -254,18 +256,42 @@ async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   );
   if (questions.length === 0) return {};
 
+  // Per question: digest only THIS loop's fresh evidence (never re-digest old sources),
+  // combine with the prior-loop digests already in state, then run the committee over the
+  // digest. A failed/disabled digest yields no items and the committee falls back to raw
+  // evidence. Digest + committee for each question run concurrently across questions.
   const batches = await Promise.all(
-    questions.map((q) =>
-      runCommittee(
+    questions.map(async (q) => {
+      const scoped = evidenceByQuestion.get(q.id) ?? [];
+      const { fresh } = splitEvidence(scoped, state.loopIteration);
+      const freshDigest =
+        DIGEST_ENABLED && fresh.length > 0
+          ? await digestEvidence(q, fresh)
+          : { questionId: q.id, items: [] as DigestItem[], usage: undefined };
+      const priorItems = state.digests[q.id] ?? [];
+      const digestItems = [...priorItems, ...freshDigest.items];
+
+      const committee = await runCommittee(
         q,
-        evidenceByQuestion.get(q.id) ?? [],
+        scoped,
         state.claims.filter((c) => c.questionId === q.id),
-      ),
-    ),
+        digestItems,
+      );
+      return { q, committee, freshItems: freshDigest.items, digestUsage: freshDigest.usage };
+    }),
   );
-  const claims: Claim[] = batches.flatMap((b) => b.claims);
-  const llmCalls = batches.flatMap((b) => b.usage);
-  return { claims, llmCalls };
+
+  const claims: Claim[] = batches.flatMap((b) => b.committee.claims);
+  const digestUsages = batches
+    .map((b) => b.digestUsage)
+    .filter((u): u is AnnotatedUsage => u !== undefined);
+  const llmCalls = [...digestUsages, ...batches.flatMap((b) => b.committee.usage)];
+  // Persist only this loop's fresh digest items; mergeDigests appends them per question.
+  const digests: Record<string, DigestItem[]> = {};
+  for (const b of batches) {
+    if (b.freshItems.length > 0) digests[b.q.id] = b.freshItems;
+  }
+  return { claims, llmCalls, digests };
 }
 
 // ---------------------------------------------------------------------------

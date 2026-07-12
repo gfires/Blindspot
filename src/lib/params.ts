@@ -46,3 +46,9 @@ export const MAX_RUN_COST_USD      = 2.00;
 
 export const MAX_EVIDENCE_CHARS_PER_AGENT = 30_000;
 export const MAX_CONCLUSION_CHARS    = 400;
+
+// Per-question evidence digest (L2): a Haiku pass compresses each source to one
+// short item before the committee fans out, so each role sees a compact digest
+// instead of full page content. DIGEST_ENABLED=false falls back to raw evidence.
+export const DIGEST_ENABLED          = true;
+export const MAX_DIGEST_SUMMARY_CHARS = 400;

@@ -12,6 +12,7 @@ import type { ResearchStateT, Question } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
 import type { SearchProgress } from "../evidence/firecrawl";
 import type { Claim } from "../schemas/claim";
+import type { DigestItem } from "./digest";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
 import { TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
@@ -190,6 +191,7 @@ async function runGraphStreamingInner(
           case "debate": {
             const claims = (output.claims ?? []) as Claim[];
             const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
+            const digests = (output.digests ?? {}) as Record<string, DigestItem[]>;
             allLlmCalls.push(...usages);
             allClaims.push(...claims);
 
@@ -198,6 +200,18 @@ async function runGraphStreamingInner(
             }
 
             for (const u of usages) {
+              // Digest calls are tagged `digest:<questionId>` (see digest.ts) — surface
+              // them as their own event before folding into the usage totals.
+              if (u.label.startsWith("digest:")) {
+                const questionId = u.label.slice("digest:".length);
+                send({
+                  type: "debate:digest",
+                  questionId,
+                  loopIteration: currentLoopIteration,
+                  evidenceCount: digests[questionId]?.length ?? 0,
+                  usage: u,
+                });
+              }
               send({ type: "research:usage", usage: u });
             }
 

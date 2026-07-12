@@ -1,4 +1,5 @@
-import { compileResearchGraph, synthesizeReport } from "./graph";
+import { GraphRecursionError } from "@langchain/langgraph";
+import { compileResearchGraph, synthesizeReport, computeRecursionLimit } from "./graph";
 import { rollupTokens } from "./eval";
 import type { ArmResult } from "./eval";
 import type { ResearchStateT, Question } from "../schemas/state";
@@ -7,7 +8,7 @@ import type { SearchProgress } from "../evidence/firecrawl";
 import type { Claim } from "../schemas/claim";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
-import { TOTAL_FIRECRAWL_BUDGET } from "../params";
+import { TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
 import { startTrace } from "./trace";
 import { runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 
@@ -48,7 +49,11 @@ async function runGraphStreamingInner(
     // "updates" fires only on node COMPLETION, so begin events are emitted eagerly
     // below (each node's successor is deterministic). "custom" carries live
     // search/scrape progress written by the retrieve node's config.writer.
-    { configurable: { thread_id: threadId }, streamMode: ["updates", "custom"] as const },
+    {
+      configurable: { thread_id: threadId },
+      streamMode: ["updates", "custom"] as const,
+      recursionLimit: computeRecursionLimit(MAX_LOOP_ITERATIONS),
+    },
   );
 
   let allLlmCalls: AnnotatedUsage[] = [];
@@ -64,7 +69,21 @@ async function runGraphStreamingInner(
   let budgetRemaining = initialBudget;
   const unresolvedIds = () => currentQuestions.filter(q => !q.resolved).map(q => q.id);
 
-  let budgetExceeded = false;
+  let degraded = false;
+  let degradeMessage = "";
+
+  // Always persist the trace — on success and on failure — with its own try/catch so a
+  // write failure never masks the run error. A local helper (called on the normal path
+  // and before a hard-fail rethrow) instead of a finally, to avoid wrapping the entire
+  // streaming loop in another try level.
+  const writeTrace = async () => {
+    try {
+      const tracePath = await trace.writeToDisk(topic);
+      console.log(`[trace] written to ${tracePath}`);
+    } catch (err) {
+      console.error("[trace] failed to write:", err);
+    }
+  };
 
   try {
     for await (const chunk of stream as AsyncIterable<[string, unknown]>) {
@@ -230,10 +249,22 @@ async function runGraphStreamingInner(
       }
     }
   } catch (err) {
+    // Graceful degradation: a hit budget cap and a hit recursion limit both fall back
+    // to synthesizing whatever partial state the checkpointer persisted.
     if (err instanceof BudgetExceededError) {
-      budgetExceeded = true;
+      degraded = true;
+      degradeMessage = "LLM cost cap reached — synthesizing partial report";
       trace.log("budget_exceeded", { message: err.message });
+    } else if (err instanceof GraphRecursionError) {
+      degraded = true;
+      degradeMessage = "recursion limit reached — synthesizing partial report";
+      trace.log("recursion_limit", { message: err.message });
     } else {
+      const message = err instanceof Error ? err.message : String(err);
+      const stack = err instanceof Error ? err.stack : undefined;
+      trace.log("run_failed", { message, stack });
+      console.error("[research] orchestrated streaming run failed:", err);
+      await writeTrace();
       throw err;
     }
   }
@@ -242,8 +273,8 @@ async function runGraphStreamingInner(
   const finalState = fullState.values as ResearchStateT;
 
   const report = synthesizeReport(finalState);
-  if (budgetExceeded) {
-    send({ type: "research:error", message: "LLM cost cap reached — synthesizing partial report" });
+  if (degraded) {
+    send({ type: "research:error", message: degradeMessage });
   }
   send({ type: "recommend:done", report });
 
@@ -272,12 +303,7 @@ async function runGraphStreamingInner(
     durationMs: Date.now() - t0,
   };
 
-  try {
-    const tracePath = await trace.writeToDisk(topic);
-    console.log(`[trace] written to ${tracePath}`);
-  } catch (err) {
-    console.error("[trace] failed to write:", err);
-  }
+  await writeTrace();
 
   return result;
 }

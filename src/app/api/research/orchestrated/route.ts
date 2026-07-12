@@ -21,6 +21,7 @@ export async function POST(req: Request) {
       try {
         await runGraphStreaming(topic.trim(), send, budget);
       } catch (err) {
+        console.error("[research] orchestrated run failed:", err);
         send({ type: "research:error", message: err instanceof Error ? err.message : String(err) });
       } finally {
         controller.close();

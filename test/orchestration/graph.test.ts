@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { compileResearchGraph, synthesizeReport } from "@/lib/orchestration/graph";
+import { compileResearchGraph, synthesizeReport, computeRecursionLimit } from "@/lib/orchestration/graph";
 import { accumulate } from "@/lib/schemas/state";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
 import type { Evidence } from "@/lib/schemas/evidence";
@@ -40,6 +40,19 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     ...over,
   } as ResearchStateT;
 }
+
+describe("computeRecursionLimit", () => {
+  it("exceeds LangGraph's default of 25 at the max loop count", () => {
+    // A 5-loop run structurally needs ~25 supersteps; the default limit of 25 must be cleared.
+    expect(computeRecursionLimit(5)).toBeGreaterThan(25);
+  });
+
+  it("is strictly monotonic in maxLoops", () => {
+    for (let n = 0; n < 8; n++) {
+      expect(computeRecursionLimit(n + 1)).toBeGreaterThan(computeRecursionLimit(n));
+    }
+  });
+});
 
 describe("synthesizeReport", () => {
   it("averages committee claim confidences per question", () => {

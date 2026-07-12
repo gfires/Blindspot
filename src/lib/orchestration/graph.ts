@@ -22,7 +22,7 @@
  * `runCommittee()` (committee agent) are implemented on sibling branches. The
  * signatures consumed here are the integration contract; see their imports below.
  */
-import { StateGraph, MemorySaver, START, END, type LangGraphRunnableConfig } from "@langchain/langgraph";
+import { StateGraph, MemorySaver, START, END, GraphRecursionError, type LangGraphRunnableConfig } from "@langchain/langgraph";
 import { generateText, Output } from "ai";
 import { z } from "zod";
 
@@ -31,7 +31,7 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
 import { type ArmResult, toAnnotatedUsage, rollupTokens } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET } from "../params";
+import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 
@@ -47,6 +47,16 @@ import { allocateBudget } from "./gate";
 // ---------------------------------------------------------------------------
 // Pure helpers — exported for direct unit testing
 // ---------------------------------------------------------------------------
+
+/**
+ * LangGraph's default recursionLimit (25) collides with a full run: a single loop
+ * pass is 4 supersteps (retrieve/debate/gate/refine), plus 4 initial supersteps
+ * (decompose/retrieve/debate/gate) and a final recommend. So `maxLoops` full passes
+ * need `4 + 4*maxLoops + 1` supersteps; we add a small margin.
+ */
+export function computeRecursionLimit(maxLoops: number): number {
+  return 5 + 4 * maxLoops + 5; // needed supersteps + margin
+}
 
 export function scopeEvidenceToQuestions(
   questions: Question[],
@@ -463,46 +473,59 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
   const threadId = `run-${Date.now()}`;
   const t0 = Date.now();
 
-  let finalState: ResearchStateT;
-  let budgetExceeded = false;
-
   try {
-    finalState = await graph.invoke(
-      { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
-      { configurable: { thread_id: threadId } },
-    );
-  } catch (err) {
-    if (err instanceof BudgetExceededError) {
-      budgetExceeded = true;
-      trace.log("budget_exceeded", { message: err.message });
-      const partial = await graph.getState({ configurable: { thread_id: threadId } });
-      finalState = partial.values as ResearchStateT;
-    } else {
-      throw err;
+    let finalState: ResearchStateT;
+    let degraded = false;
+
+    try {
+      finalState = await graph.invoke(
+        { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
+        { configurable: { thread_id: threadId }, recursionLimit: computeRecursionLimit(MAX_LOOP_ITERATIONS) },
+      );
+    } catch (err) {
+      // Graceful degradation: both a hit budget cap and a hit recursion limit fall
+      // back to synthesizing whatever partial state the checkpointer persisted.
+      if (err instanceof BudgetExceededError) {
+        degraded = true;
+        trace.log("budget_exceeded", { message: err.message });
+        const partial = await graph.getState({ configurable: { thread_id: threadId } });
+        finalState = partial.values as ResearchStateT;
+      } else if (err instanceof GraphRecursionError) {
+        degraded = true;
+        trace.log("recursion_limit", { message: err.message });
+        const partial = await graph.getState({ configurable: { thread_id: threadId } });
+        finalState = partial.values as ResearchStateT;
+      } else {
+        const message = err instanceof Error ? err.message : String(err);
+        const stack = err instanceof Error ? err.stack : undefined;
+        trace.log("run_failed", { message, stack });
+        console.error("[research] orchestrated run failed:", err);
+        throw err;
+      }
+    }
+
+    const report = synthesizeReport(finalState);
+    if (degraded) {
+      console.log(`[degrade] run halted early — synthesizing partial report`);
+    }
+
+    return {
+      arm: "orchestrated" as const,
+      topic,
+      report,
+      tokens: rollupTokens(finalState.llmCalls),
+      firecrawlCalls: finalState.firecrawlCalls,
+      firecrawlCredits: finalState.firecrawlCredits,
+      durationMs: Date.now() - t0,
+    };
+  } finally {
+    // Always write the trace — even when the run threw — so failures are debuggable.
+    // Its own try/catch: a write failure must never mask the run error.
+    try {
+      const tracePath = await trace.writeToDisk(topic);
+      console.log(`[trace] written to ${tracePath}`);
+    } catch (err) {
+      console.error("[trace] failed to write:", err);
     }
   }
-
-  const report = synthesizeReport(finalState);
-  if (budgetExceeded) {
-    console.log(`[budget] LLM cost cap reached — synthesizing partial report`);
-  }
-
-  const result = {
-    arm: "orchestrated" as const,
-    topic,
-    report,
-    tokens: rollupTokens(finalState.llmCalls),
-    firecrawlCalls: finalState.firecrawlCalls,
-    firecrawlCredits: finalState.firecrawlCredits,
-    durationMs: Date.now() - t0,
-  };
-
-  try {
-    const tracePath = await trace.writeToDisk(topic);
-    console.log(`[trace] written to ${tracePath}`);
-  } catch (err) {
-    console.error("[trace] failed to write:", err);
-  }
-
-  return result;
 }

@@ -58,6 +58,12 @@ Key routing rules:
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
 
+## Agent orchestration (delegating work)
+
+- **Delegate through Conductor workspaces, not headless sub-agents.** For parallel or delegated work, create a Conductor workspace (own pane: live chat + terminal + diff viewer, resumable via checkpoints, correct base branch). Do NOT use the Agent tool's `isolation: worktree` sub-agents for substantive delegation — they run invisibly, can't be cleanly resumed after an API disconnect, and branch off the root checkout's HEAD (`main`), not the workspace branch. See [[worktree-base-branch-gotcha]].
+- **New workspaces base off the pushed base branch.** A Conductor workspace is created from `origin/<base>` (it fetches first). To continue work on a local feature branch, push it first, then set the new workspace's base branch to it — otherwise the workspace won't contain unpushed commits.
+- **Keep delegated tasks small and atomic.** One file / one function per task. Large multi-hundred-line re-indents are what die mid-edit on a disconnect. Sequential dependency chains (shared files, symbol dependencies) don't parallelize — do them inline or in one workspace, one phase at a time, with a `tsc`/`vitest` gate + commit per phase.
+
 ## Design principles
 
 - **Enforce in code, not prompts.** If a constraint can be checked or clamped programmatically, do it — don't rely on the LLM obeying a prompt instruction. Prompts are hints; code is guarantees. Examples: budget caps, enum membership, ID validation, range clamping.

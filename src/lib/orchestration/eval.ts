@@ -16,40 +16,100 @@ import type { ScanReport } from "../schema";
 import type { ResearchReport } from "./graph";
 import type { ScanEvent, TokenUsage } from "../events";
 
-/** Cost per million tokens by model (USD). Update when model pricing changes. */
-const MODEL_COST: Record<string, { input: number; output: number }> = {
+/**
+ * Cost per million tokens by model (USD). Update when model pricing changes.
+ * `cacheReadMult`/`cacheWriteMult` are per-model overrides for the prompt-cache
+ * pricing multipliers (fraction of the base input rate). They default to
+ * DEFAULT_CACHE_READ_MULT / DEFAULT_CACHE_WRITE_MULT when absent.
+ */
+const MODEL_COST: Record<
+  string,
+  { input: number; output: number; cacheReadMult?: number; cacheWriteMult?: number }
+> = {
   "gpt-4o":                       { input: 2.50, output: 10.00 },
   "gpt-4o-mini":                  { input: 0.15, output:  0.60 },
   "claude-sonnet-5":              { input: 2.00, output: 10.00 },
   "claude-haiku-4-5-20251001":    { input: 1.00, output:  5.00 },
 };
 
-export function estimateCostUsd(usage: TokenUsage): number {
-  const pricing = MODEL_COST[usage.model] ?? { input: 0, output: 0 };
-  return (
-    (usage.promptTokens / 1_000_000) * pricing.input +
-    (usage.completionTokens / 1_000_000) * pricing.output
-  );
+/** Cached (read) prompt tokens bill at this fraction of the base input rate. */
+const DEFAULT_CACHE_READ_MULT = 0.1;
+/** Cache-creation (write) prompt tokens bill at this fraction of the base input rate. */
+const DEFAULT_CACHE_WRITE_MULT = 1.25;
+
+/** Unknown model ids we've already warned about, so each warns exactly once. */
+const warnedUnknownModels = new Set<string>();
+
+/** Usage with optional prompt-cache breakdowns folded into the base TokenUsage. */
+export type CacheAwareUsage = TokenUsage & {
+  /** Prompt tokens served from the provider's cache (billed at the read multiplier). */
+  cachedPromptTokens?: number;
+  /** Prompt tokens written to the provider's cache (billed at the write multiplier). */
+  cacheCreationTokens?: number;
+};
+
+export function estimateCostUsd(usage: CacheAwareUsage): number {
+  const pricing = MODEL_COST[usage.model];
+  if (!pricing) {
+    if (!warnedUnknownModels.has(usage.model)) {
+      warnedUnknownModels.add(usage.model);
+      console.warn(
+        `[eval] Unknown model "${usage.model}" — cost estimated as $0. Add it to MODEL_COST.`,
+      );
+    }
+    return 0;
+  }
+
+  const cached = usage.cachedPromptTokens ?? 0;
+  const creation = usage.cacheCreationTokens ?? 0;
+  const readMult = pricing.cacheReadMult ?? DEFAULT_CACHE_READ_MULT;
+  const writeMult = pricing.cacheWriteMult ?? DEFAULT_CACHE_WRITE_MULT;
+
+  // Cached and cache-creation tokens are subsets of promptTokens billed at reduced
+  // rates; the remainder bills at the full input rate. Clamp the remainder ≥ 0 so a
+  // provider that double-counts can never yield a negative cost.
+  const uncached = Math.max(0, usage.promptTokens - cached - creation);
+  const inputCost =
+    ((uncached / 1_000_000) * pricing.input) +
+    ((cached / 1_000_000) * readMult * pricing.input) +
+    ((creation / 1_000_000) * writeMult * pricing.input);
+
+  return inputCost + (usage.completionTokens / 1_000_000) * pricing.output;
 }
 
 /** One LLM call's usage annotated with its estimated USD cost. */
-export type AnnotatedUsage = TokenUsage & { label: string; costUsd: number };
+export type AnnotatedUsage = CacheAwareUsage & { label: string; costUsd: number };
 
 /**
- * Build an AnnotatedUsage from a Vercel AI SDK `generateText` result's `usage` field
- * (`inputTokens`/`outputTokens`, both possibly undefined for providers that omit them).
- * Every graph/committee/gate call site should route its usage through this so cost
- * estimation stays in one place.
+ * Build an AnnotatedUsage from a Vercel AI SDK `generateText` result's `usage` field.
+ * Reads `inputTokens`/`outputTokens` (both possibly undefined for providers that omit
+ * them) and, when the provider reports it, `cachedInputTokens`. Pass the call's
+ * `providerMetadata` to also capture Anthropic's `cacheCreationInputTokens` (most call
+ * sites won't — the arg is optional and absence is guarded). Every graph/committee/gate
+ * call site should route its usage through this so cost estimation stays in one place.
  */
 export function toAnnotatedUsage(
-  usage: { inputTokens?: number; outputTokens?: number } | undefined,
+  usage:
+    | { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number }
+    | undefined,
   model: string,
   label: string,
+  providerMetadata?: Record<string, unknown>,
 ): AnnotatedUsage {
-  const tokenUsage: TokenUsage = {
+  const anthropic = providerMetadata?.anthropic as
+    | { cacheCreationInputTokens?: number }
+    | undefined;
+  const cacheCreation =
+    typeof anthropic?.cacheCreationInputTokens === "number"
+      ? anthropic.cacheCreationInputTokens
+      : undefined;
+
+  const tokenUsage: CacheAwareUsage = {
     model,
     promptTokens: usage?.inputTokens ?? 0,
     completionTokens: usage?.outputTokens ?? 0,
+    cachedPromptTokens: usage?.cachedInputTokens ?? 0,
+    ...(cacheCreation !== undefined ? { cacheCreationTokens: cacheCreation } : {}),
   };
   return { ...tokenUsage, label, costUsd: estimateCostUsd(tokenUsage) };
 }

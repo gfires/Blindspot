@@ -22,8 +22,9 @@ describe("fakeGenResult", () => {
     expect(annotated.label).toBe("smoke");
     expect(annotated.promptTokens).toBe(120);
     expect(annotated.completionTokens).toBe(40);
-    // claude-sonnet-5: $3/M in, $15/M out → 120/1e6*3 + 40/1e6*15.
-    expect(annotated.costUsd).toBeCloseTo(120e-6 * 3 + 40e-6 * 15, 12);
+    // claude-sonnet-5: $2/M in, $10/M out. Of 120 prompt tokens, 100 are cached
+    // (billed at the 0.1× read multiplier), leaving 20 uncached; plus 40 output.
+    expect(annotated.costUsd).toBeCloseTo(20e-6 * 2 + 100e-6 * 0.1 * 2 + 40e-6 * 10, 12);
   });
 
   it("defaults usage to zeros when omitted", () => {

@@ -66,6 +66,53 @@ describe("buildCommitteeMessages", () => {
     expect(cacheControl(skepticSys)).toBeUndefined();
   });
 
+  const OBJECTIVE = "Decide go/no-go on AI-native contract review for mid-market law firms";
+
+  it("prepends the RESEARCH OBJECTIVE to the system prefix, byte-identical across the 3 Claude roles", () => {
+    const [hSys] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+    const [oSys] = buildCommitteeMessages("operator", q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+    const [iSys] = buildCommitteeMessages("investor", q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+    // In the SHARED system prefix (L3), and identical across roles → cache invariant holds.
+    expect(hSys.content).toContain("RESEARCH OBJECTIVE");
+    expect(hSys.content).toContain(OBJECTIVE);
+    expect(hSys.content).toBe(oSys.content);
+    expect(hSys.content).toBe(iSys.content);
+  });
+
+  it("omits the objective block entirely when no objective is supplied (pre-A4 behavior)", () => {
+    const [sys] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0);
+    expect(sys.content).not.toContain("RESEARCH OBJECTIVE");
+  });
+
+  it("keeps the objective out of the per-role user message (it's shared context, not a persona)", () => {
+    const [, user] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+    expect(user.content).not.toContain("RESEARCH OBJECTIVE");
+    expect(user.content).not.toContain(OBJECTIVE);
+  });
+
+  it("still gives the skeptic no cacheControl even with an objective above the char threshold", () => {
+    const [sys] = buildCommitteeMessages("skeptic", q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+    expect(cacheControl(sys)).toBeUndefined();
+  });
+
+  it("leaves ROLE_SYSTEM_PROMPTS untouched — each role's signature incentive is verbatim in the user message", () => {
+    // Guard the invariant: threading the objective must NOT rewrite or soften a persona. Each
+    // role's distinctive incentive line must still appear byte-for-byte in its user message,
+    // whether or not an objective is present.
+    const incentives: Record<string, string> = {
+      historian: "Your incentive is PRECEDENT.",
+      operator: "Your incentive is REALITY ON THE GROUND.",
+      investor: "Your incentive is RETURN.",
+      skeptic: "Your incentive is DISCONFIRMATION.",
+    };
+    for (const [role, line] of Object.entries(incentives)) {
+      const [, withObj] = buildCommitteeMessages(role as never, q("q1"), BIG_BLOCK, 0, undefined, OBJECTIVE);
+      const [, without] = buildCommitteeMessages(role as never, q("q1"), BIG_BLOCK, 0);
+      expect(withObj.content).toContain(line);
+      expect(without.content).toContain(line);
+    }
+  });
+
   it("adds the role's prior claim with an update instruction on a re-debate", () => {
     const prior: Claim = {
       id: "q1:historian:0",

@@ -380,6 +380,9 @@ async function debate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
         scoped,
         state.claims.filter((c) => c.questionId === q.id),
         digestItems,
+        // Point the committee at the real ask (A4). Topic-level and identical across the three
+        // Claude roles, so the L3 shared-prefix cache invariant holds.
+        state.researchBrief.objective,
       );
       return { q, debateResult, freshItems: freshDigest.items, digestUsage: freshDigest.usage };
     }),

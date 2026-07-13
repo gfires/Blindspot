@@ -109,4 +109,33 @@ describe("buildDebateMessages", () => {
     expect((small.content as string).length).toBeLessThan(PROMPT_CACHE_MIN_CHARS);
     expect(cacheControl(small)).toBeUndefined();
   });
+
+  const OBJECTIVE = "Adjudicate whether freight brokerage can support a venture outcome";
+
+  it("prepends the RESEARCH OBJECTIVE to the system prefix, byte-identical across the 3 Claude roles", () => {
+    const [h] = buildDebateMessages("historian", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJECTIVE);
+    const [o] = buildDebateMessages("operator", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJECTIVE);
+    const [i] = buildDebateMessages("investor", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJECTIVE);
+    expect(h.content).toContain("RESEARCH OBJECTIVE");
+    expect(h.content).toContain(OBJECTIVE);
+    expect(h.content).toBe(o.content);
+    expect(h.content).toBe(i.content);
+  });
+
+  it("omits the objective block when none is supplied (pre-A4 behavior)", () => {
+    const [sys] = buildDebateMessages("historian", q("q1"), BIG_BLOCK, transcript, undefined, 0);
+    expect(sys.content).not.toContain("RESEARCH OBJECTIVE");
+  });
+
+  it("gives the skeptic no cacheControl even with an objective above threshold", () => {
+    const [sys] = buildDebateMessages("skeptic", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJECTIVE);
+    expect(cacheControl(sys)).toBeUndefined();
+  });
+
+  it("leaves the role persona (ROLE_SYSTEM_PROMPTS) intact in the user message with an objective present", () => {
+    const [, user] = buildDebateMessages("skeptic", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJECTIVE);
+    // The skeptic can now attack the actual bet — but its persona incentive is unchanged.
+    expect(user.content).toContain("Your incentive is DISCONFIRMATION.");
+    expect(user.content).not.toContain("RESEARCH OBJECTIVE");
+  });
 });

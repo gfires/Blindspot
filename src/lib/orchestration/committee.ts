@@ -183,6 +183,24 @@ export function splitEvidence(
 }
 
 /**
+ * The RESEARCH OBJECTIVE lines prepended to the committee's SHARED system prefix (the intake
+ * brief's objective). Kept in one place so the opening round and the conversational rounds
+ * render it identically. Empty objective → no block (the prefix is unchanged from pre-A4), so a
+ * run with no brief behaves exactly as before. The block is topic-level and role-independent,
+ * so it never breaks the byte-identical-across-roles cache invariant.
+ */
+function objectivePrefix(objective: string): string[] {
+  const trimmed = objective.trim();
+  if (!trimmed) return [];
+  return [
+    "RESEARCH OBJECTIVE — the committee's shared goal for this whole investigation. Aim your",
+    "role's analysis at THIS ask (do not restate it; use it to sharpen what you look for):",
+    trimmed,
+    "",
+  ];
+}
+
+/**
  * Build the AI-SDK messages for one committee role, structured for Anthropic prompt-cache
  * hits (L3).
  *
@@ -196,6 +214,12 @@ export function splitEvidence(
  * caching) and only for the Claude roles — the skeptic runs on OpenAI and gets no anthropic
  * providerOptions. `currentLoop` is part of the signature for callers that key cache reuse
  * on the loop; the prompt text itself doesn't branch on it.
+ *
+ * `objective` (the intake ResearchBrief's objective) is prepended as a short RESEARCH OBJECTIVE
+ * block to the SHARED system prefix. It is topic-level — identical across the three Claude roles —
+ * so the byte-identical-across-roles cache invariant (L3) still holds. It is CONTEXT that points
+ * the existing roles at the real ask (the skeptic can attack the actual bet); it does NOT touch
+ * ROLE_SYSTEM_PROMPTS, which stay in the per-role user message unchanged.
  */
 export function buildCommitteeMessages(
   role: AgentRoleT,
@@ -203,10 +227,12 @@ export function buildCommitteeMessages(
   evidenceBlock: string,
   currentLoop: number,
   priorClaim?: Claim,
+  objective = "",
 ): ModelMessage[] {
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
   const systemPrefix = [
+    ...objectivePrefix(objective),
     `QUESTION (${question.category}): ${question.text}`,
     "",
     "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
@@ -279,10 +305,12 @@ export function buildDebateMessages(
   transcript: DebateRound[],
   priorTurn: Claim | undefined,
   currentLoop: number,
+  objective = "",
 ): ModelMessage[] {
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
   const systemPrefix = [
+    ...objectivePrefix(objective),
     `QUESTION (${question.category}): ${question.text}`,
     "",
     "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
@@ -365,6 +393,7 @@ export async function runCommittee(
   evidence: Evidence[],
   priorClaims: Claim[] = [],
   digestItems: DigestItem[] = [],
+  objective = "",
 ): Promise<CommitteeResult> {
   // The loop iteration this claim belongs to = the most recent retrieval round it can see.
   const loopIteration = evidence.reduce((max, e) => Math.max(max, e.loopIteration), 0);
@@ -386,7 +415,7 @@ export async function runCommittee(
     const priorClaim = priorClaims
       .filter((c) => c.agentRole === role)
       .sort((a, b) => b.loopIteration - a.loopIteration)[0];
-    const messages = buildCommitteeMessages(role, question, evidenceBlock, loopIteration, priorClaim);
+    const messages = buildCommitteeMessages(role, question, evidenceBlock, loopIteration, priorClaim, objective);
     // Cap concurrency per model (L6) so a committee fan-out can't trip gpt-4o's TPM limit,
     // and retry transient provider errors.
     const { output: object, usage } = await limiterForModel(model.modelId)(() =>
@@ -466,6 +495,7 @@ export async function runDebate(
   evidence: Evidence[],
   priorClaims: Claim[] = [],
   digestItems: DigestItem[] = [],
+  objective = "",
 ): Promise<DebateResult> {
   const loopIteration = evidence.reduce((max, e) => Math.max(max, e.loopIteration), 0);
   const evidenceBlock = digestItems.length > 0
@@ -473,7 +503,7 @@ export async function runDebate(
     : formatEvidence(evidence);
 
   // Round 0 — the independent opening (blind), identical to today's committee pass.
-  const opening = await runCommittee(question, evidence, priorClaims, digestItems);
+  const opening = await runCommittee(question, evidence, priorClaims, digestItems, objective);
   const rounds: DebateRound[] = [{ round: 0, claims: opening.claims }];
   const usage: AnnotatedUsage[] = [...opening.usage];
 
@@ -498,7 +528,7 @@ export async function runDebate(
 
     const model = modelForDebateRound(role, r, loopIteration);
     const priorTurn = priorRounds[priorRounds.length - 1].claims.find((c) => c.agentRole === role);
-    const messages = buildDebateMessages(role, question, evidenceBlock, priorRounds, priorTurn, loopIteration);
+    const messages = buildDebateMessages(role, question, evidenceBlock, priorRounds, priorTurn, loopIteration, objective);
 
     const { output: object, usage: rawUsage } = await limiterForModel(model.modelId)(() =>
       generateText({

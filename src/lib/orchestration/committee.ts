@@ -324,6 +324,10 @@ export async function runCommittee(
       questionId: question.id,
       agentRole: role,
       loopIteration,
+      // runCommittee produces the independent OPENING round; runDebate (D4) drives the
+      // conversational rounds that populate responses.
+      debateRound: 0,
+      responses: [],
     };
 
     return { claim, usage: annotated };

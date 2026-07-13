@@ -34,6 +34,8 @@ function claim(questionId: string, overrides: Partial<Claim> = {}): Claim {
     contradictingEvidenceIds: [],
     missingEvidence: ["need pricing data"],
     loopIteration: 0,
+    debateRound: 0,
+    responses: [],
     ...overrides,
   };
 }

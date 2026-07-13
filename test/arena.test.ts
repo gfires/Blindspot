@@ -16,6 +16,8 @@ function makeClaim(overrides: Partial<Claim> & { agentRole: Claim["agentRole"]; 
     contradictingEvidenceIds: overrides.contradictingEvidenceIds ?? [],
     missingEvidence: overrides.missingEvidence ?? [],
     loopIteration: overrides.loopIteration ?? 0,
+    debateRound: overrides.debateRound ?? 0,
+    responses: overrides.responses ?? [],
     ...overrides,
   };
 }

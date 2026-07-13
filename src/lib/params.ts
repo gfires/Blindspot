@@ -84,6 +84,23 @@ export const REDEBATE_ROLE_MODEL_IDS: Record<AgentRoleT, string> = {
   skeptic:   "gpt-4o",
 };
 
+// -- Orchestration: debate (inner loop, Wave 3) ------------------------------
+
+// The committee is a real debate, not a poll: round 0 is the independent opening, then
+// conversational rounds until positions stop moving or this cap is hit (round 0 excluded).
+export const MAX_DEBATE_ROUNDS = 3;
+// The skeptic (the antagonist that keeps the Sonnet trio honest) stays on gpt-4o through this
+// debate round, then drops to gpt-4o-mini — by the late rounds we're closing, not breaking ground.
+export const DEBATE_SKEPTIC_STRONG_ROUNDS = 2;
+// Round-0 consensus fast-path: skip the debate (and the gate's retrieval) entirely when the four
+// opening claims genuinely AGREE — spread below this, every role at/above the confidence floor, and
+// nobody flagging a contradiction. These thresholds are compared against the committee's own real
+// confidences; they process existing signal, they don't invent one.
+export const DEBATE_CONSENSUS_SPREAD          = 0.2;
+export const DEBATE_CONSENSUS_MIN_CONFIDENCE  = 0.6;
+// Round-over-round: a confidence move at or below this counts as "no movement" for convergence.
+export const DEBATE_CONFIDENCE_EPSILON        = 0.05;
+
 // -- Orchestration: per-model concurrency + retries (L6) ----------------------
 
 // Global in-flight cap per model id. gpt-4o has a low TPM ceiling, so we serialize its

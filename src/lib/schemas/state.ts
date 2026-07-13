@@ -3,6 +3,7 @@ import type { Evidence } from "./evidence";
 import type { Claim } from "./claim";
 import type { AnnotatedUsage } from "../orchestration/eval";
 import type { DigestItem } from "../orchestration/digest";
+import type { DebateRound } from "../orchestration/debate";
 import type { GateScore } from "../research-events";
 
 /**
@@ -29,6 +30,19 @@ export interface Question {
   confidence: number;        // running confidence 0-1, updated each loop
   resolved: boolean;
   searchQueries?: string[];  // refined queries from missingEvidence; falls back to text
+}
+
+/**
+ * Reducer for the debate-transcript channel: REPLACE a question's rounds wholesale, leaving other
+ * questions untouched. Unlike digests (which accumulate across loops), a transcript is ephemeral to
+ * one evidence snapshot — when a question is re-debated on a later loop its old conversation is
+ * discarded and only the durable per-role claims (in `claims`) carry forward. Exported for testing.
+ */
+export function mergeTranscripts(
+  prev: Record<string, DebateRound[]>,
+  next: Record<string, DebateRound[]>,
+): Record<string, DebateRound[]> {
+  return { ...prev, ...next };
 }
 
 /**
@@ -87,6 +101,11 @@ export const ResearchState = Annotation.Root({
   /** Per-question evidence digests, accumulated across loops (see mergeDigests). */
   digests: Annotation<Record<string, DigestItem[]>>({
     reducer: mergeDigests,
+    default: () => ({}),
+  }),
+  /** Per-question debate transcript (all rounds), replaced per question each loop (see mergeTranscripts). */
+  debateTranscripts: Annotation<Record<string, DebateRound[]>>({
+    reducer: mergeTranscripts,
     default: () => ({}),
   }),
 });

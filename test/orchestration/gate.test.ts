@@ -34,6 +34,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     searchedQueries: [],
     gateScores: [],
     digests: {},
+    debateTranscripts: {},
     ...over,
   };
 }

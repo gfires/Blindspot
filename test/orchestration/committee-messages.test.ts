@@ -77,6 +77,8 @@ describe("buildCommitteeMessages", () => {
       contradictingEvidenceIds: [],
       missingEvidence: ["need pricing data"],
       loopIteration: 0,
+      debateRound: 0,
+      responses: [],
     };
     const [system, user] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 1, prior);
     expect(user.content).toContain("YOUR PRIOR CLAIM");

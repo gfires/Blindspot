@@ -22,6 +22,8 @@ function claim(questionId: string, confidence: number): Claim {
     contradictingEvidenceIds: [],
     missingEvidence: [],
     loopIteration: 0,
+    debateRound: 0,
+    responses: [],
   };
 }
 

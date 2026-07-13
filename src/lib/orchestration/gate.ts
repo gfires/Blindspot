@@ -7,6 +7,7 @@ import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import type { GateScore } from "../research-events";
 import { getActiveTrace } from "./trace";
 import { getActiveCostTracker } from "./cost-tracker";
+import { extractContentions, contentionRoute, type Contention } from "./debate";
 
 const GateDecisionSchema = z.object({
   decisions: z.array(z.object({
@@ -55,7 +56,65 @@ export async function allocateBudget(
 
   const unresolved = state.questions.filter(q => !q.resolved);
 
-  const questionSignals = unresolved.map(q => {
+  // --- Contention routing (D5): the marginal-utility shut-off on the retrieval loop ---
+  // For each unresolved question, read the surviving disagreements from its debate transcript.
+  // A question whose contentions are all INTERPRETIVE (roles read the same evidence differently)
+  // — or whose committee simply AGREED (no contention) — can't be helped by more retrieval, so we
+  // resolve it HERE at zero LLM cost and report the fault line. Only questions with an EVIDENTIAL
+  // contention (a named gap) — or no transcript yet (route === null) — reach the LLM gate below.
+  const contentionsByQuestion = new Map<string, Contention[]>();
+  const contentionResolved: GateScore[] = [];
+  for (const q of unresolved) {
+    const rounds = state.debateTranscripts[q.id];
+    const finalRound = rounds?.[rounds.length - 1];
+    if (!finalRound) continue; // no debate transcript → defer to the LLM gate (route null)
+    const contentions = extractContentions(q.id, finalRound.claims);
+    contentionsByQuestion.set(q.id, contentions);
+    if (contentionRoute(contentions) === "resolve") {
+      contentionResolved.push({
+        questionId: q.id,
+        retrieve: false,
+        gapCount: 0,
+        confidenceSpread: 0,
+        reason: contentions.length
+          ? "interpretive contention — retrieving is futile, reporting the fault line"
+          : "committee agreed — no surviving contention",
+      });
+    }
+  }
+
+  getActiveTrace()?.log("debate:contentions", {
+    loopIteration: state.loopIteration,
+    perQuestion: [...contentionsByQuestion.entries()].map(([questionId, cs]) => ({
+      questionId,
+      evidential: cs.filter(c => c.type === "evidential").length,
+      interpretive: cs.filter(c => c.type === "interpretive").length,
+      resolved: contentionResolved.some(s => s.questionId === questionId),
+    })),
+  });
+
+  const contentionResolvedIds = new Set(contentionResolved.map(s => s.questionId));
+  const gateQuestions = unresolved.filter(q => !contentionResolvedIds.has(q.id));
+
+  // Every unresolved question resolved by contention routing → converge with NO LLM gate call.
+  if (gateQuestions.length === 0) {
+    getActiveTrace()?.log("gate:converged", {
+      reason: "contention-resolved",
+      loopIteration: state.loopIteration,
+      budgetRemaining: state.budgetRemaining,
+    });
+    const questions = state.questions.map(q =>
+      contentionResolvedIds.has(q.id) ? { ...q, resolved: true } : q,
+    );
+    return {
+      state: { ...state, questions, converged: true },
+      continueLoop: false,
+      usage: [],
+      gateScores: contentionResolved,
+    };
+  }
+
+  const questionSignals = gateQuestions.map(q => {
     const claims = state.claims.filter(c => c.questionId === q.id);
     const confidences = claims.map(c => c.confidence);
     const gapCount = claims.reduce((sum, c) => sum + c.missingEvidence.length, 0);
@@ -144,6 +203,10 @@ Return a decision for every question ID listed above.`;
         : s
     );
   }
+
+  // Fold in the contention-resolved questions (retrieve:false) so the report and the
+  // questions map below see them alongside the LLM gate's decisions.
+  gateScores = [...gateScores, ...contentionResolved];
 
   const continueLoop = gateScores.some(d => d.retrieve);
 

@@ -41,7 +41,7 @@ import { search } from "../evidence/firecrawl";
 // committee.ts: run the multi-role committee as a debate over a question + evidence → Claims +
 // transcript. (committee derives the loop iteration from the evidence's own loopIteration.)
 import { runDebate, splitEvidence } from "./committee";
-import type { DebateRound } from "./debate";
+import { extractContentions, type DebateRound } from "./debate";
 // digest.ts: compress each question's fresh evidence with a cheap Haiku pass (L2).
 import { digestEvidence, type DigestItem } from "./digest";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
@@ -362,7 +362,19 @@ async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
     const claims = state.claims.filter(
       (c) => c.questionId === q.id && c.loopIteration === latestLoop,
     );
-    const gaps = claims.flatMap((c) => c.missingEvidence).filter(Boolean);
+    // Draw gaps from the CONTESTED claims — the roles standing on either side of an evidential
+    // contention (a named gap that could settle their disagreement). Focusing the second retrieval
+    // pass there aims it at the actual fault line rather than every role's wishlist. Fall back to all
+    // gaps when no specific evidential contention was found (e.g. no transcript this loop).
+    const rounds = state.debateTranscripts[q.id];
+    const finalRound = rounds?.[rounds.length - 1];
+    const contested = new Set(
+      (finalRound ? extractContentions(q.id, finalRound.claims) : [])
+        .filter((c) => c.type === "evidential")
+        .flatMap((c) => c.roles),
+    );
+    const gapClaims = contested.size ? claims.filter((c) => contested.has(c.agentRole)) : claims;
+    const gaps = gapClaims.flatMap((c) => c.missingEvidence).filter(Boolean);
     const gapText = gaps.length > 0 ? gaps.join("; ") : "";
     return { id: q.id, text: q.text, gaps, gapText };
   });
@@ -584,6 +596,28 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       console.log(`[degrade] run halted early — synthesizing partial report`);
     }
 
+    // Debate stats over the final transcripts — how much the committee actually deliberated, the
+    // shape of the disagreement that survived, and how many concessions were made. All mechanical
+    // (counts over the transcript), no invented scores.
+    let questionsDebated = 0;
+    let conversationalRounds = 0;
+    let evidentialContentions = 0;
+    let interpretiveContentions = 0;
+    let concessions = 0;
+    for (const [qid, rounds] of Object.entries(finalState.debateTranscripts)) {
+      questionsDebated += 1;
+      conversationalRounds += Math.max(0, rounds.length - 1); // round 0 is the opening, not debate
+      const finalRound = rounds[rounds.length - 1];
+      if (!finalRound) continue;
+      for (const c of extractContentions(qid, finalRound.claims)) {
+        if (c.type === "evidential") evidentialContentions += 1;
+        else interpretiveContentions += 1;
+      }
+      for (const claim of finalRound.claims) {
+        concessions += claim.responses.filter((r) => r.stance === "concede").length;
+      }
+    }
+
     // Self-contained end-of-run summary in the trace (the streaming runner logs its own).
     trace.log("final_state", {
       topic,
@@ -597,6 +631,12 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       budgetRemaining: finalState.budgetRemaining,
       firecrawlCalls: finalState.firecrawlCalls,
       firecrawlCredits: finalState.firecrawlCredits,
+      debate: {
+        questionsDebated,
+        conversationalRounds,
+        contentions: { evidential: evidentialContentions, interpretive: interpretiveContentions },
+        concessions,
+      },
     });
 
     return {

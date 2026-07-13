@@ -211,3 +211,20 @@ export function extractContentions(questionId: string, finalClaims: Claim[]): Co
 
   return contentions;
 }
+
+/**
+ * Route a question's surviving contentions at the gate (D5) — the marginal-utility shut-off on the
+ * retrieval loop. A contention that names NO missing evidence is INTERPRETIVE: the roles read the
+ * same evidence differently, so more retrieval is futile — "resolve" and report the fault line. Only
+ * an EVIDENTIAL contention (a named gap that could settle it) is worth spending budget on, so
+ * "retrieve" hands the question to the LLM gate to decide under budget. `null` means no signal (no
+ * debate transcript for this question yet) — defer to the gate's normal flow rather than force a
+ * resolution. Note: an empty contention set means the committee AGREED → "resolve" (nothing to chase).
+ */
+export function contentionRoute(
+  contentions: Contention[] | undefined,
+): "retrieve" | "resolve" | null {
+  if (!contentions) return null;
+  if (contentions.some((c) => c.type === "evidential")) return "retrieve";
+  return "resolve";
+}

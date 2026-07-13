@@ -34,6 +34,25 @@ describe("buildCommitteeMessages", () => {
     expect(system.content).not.toContain("HISTORIAN");
   });
 
+  it("anchors every role's user message to the evidence in the system message", () => {
+    // The L3 cache split moved QUESTION + EVIDENCE into the system message. Without an explicit
+    // pointer from the user message, a role can confabulate that no evidence was supplied (the
+    // historian did exactly this in a real run). The anchor prevents that, and — because it lives
+    // in the per-role user message — it must NOT disturb the shared, cacheable system prefix.
+    for (const role of ["historian", "operator", "investor", "skeptic"] as const) {
+      const [system, user] = buildCommitteeMessages(role, q("q1"), BIG_BLOCK, 0);
+      expect(user.content).toContain("system message above");
+      expect(system.content).not.toContain("system message above");
+    }
+  });
+
+  it("tells the historian to distinguish 'no precedent' from 'no evidence'", () => {
+    // The historian persona used to license "absence of history is itself a finding", which Sonnet
+    // over-generalized into "no evidence was supplied at all". The guard forbids that specific move.
+    const [, user] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0);
+    expect(user.content).toContain("NEVER claim you were given no evidence");
+  });
+
   it("attaches anthropic cacheControl to a Claude role only above the char threshold", () => {
     const [bigSys] = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0);
     const [smallSys] = buildCommitteeMessages("historian", q("q1"), SMALL_BLOCK, 0);

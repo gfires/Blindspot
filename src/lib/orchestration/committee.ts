@@ -71,8 +71,12 @@ For the question asked, hunt the evidence for:
 - What is genuinely different NOW (technology, cost curve, regulation, behavior) that could change the outcome
   versus what is just this cycle's founders assuming they are smarter than the last cohort.
 
-Be concrete about the historical record. If the evidence contains no real precedent, say that plainly and
-keep confidence low — absence of history is itself a finding, not a license to speculate.
+The evidence block always contains sources on this topic — read it before concluding. If those sources
+contain no real PRECEDENT (prior attempts, named competitors, documented outcomes), say the evidence lacks
+precedent and keep confidence low — that absence is itself a finding. But "no precedent in this evidence" and
+"no evidence at all" are different: NEVER claim you were given no evidence or no question. When the evidence is
+purely current-state (regulation, market size, tech) with no historical hooks, note the gap and still ground any
+observations you can in the sources you were given.
 `.trim(),
 
   operator: `
@@ -224,6 +228,13 @@ export function buildCommitteeMessages(
     : [];
 
   const userContent = [
+    // Anchor to the system evidence. The L3 cache split put QUESTION + EVIDENCE in the system
+    // message; without this pointer a role can wrongly conclude nothing was supplied. Uniform
+    // across roles and kept in the user message so the shared system prefix stays cache-identical.
+    "The QUESTION and its EVIDENCE are provided in the system message above. Base your answer only on",
+    "that evidence block, cite sources by their exact bracketed id, and never claim evidence was",
+    "missing when the block is non-empty.",
+    "",
     ROLE_SYSTEM_PROMPTS[role],
     "",
     ...priorClaimBlock,

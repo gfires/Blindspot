@@ -66,6 +66,29 @@ describe("clampDigest", () => {
     expect(out).toHaveLength(1);
     expect(out[0].summary).toBe("first");
   });
+
+  // Regression: Haiku echoes the id WITH the brackets it saw in the prompt
+  // (evidenceId: "[e1]"). Those items must still match the bare evidence id, and the
+  // returned id must be bare so formatDigestForCommittee can look it up by e.id.
+  it("normalizes a bracket-wrapped id and keeps the item", () => {
+    const out = clampDigest([{ evidenceId: "[e1]", summary: "real" }], new Set(["e1"]));
+    expect(out).toEqual([{ evidenceId: "e1", summary: "real" }]);
+  });
+
+  it("still drops a bracket-wrapped id that isn't a real evidence id", () => {
+    const out = clampDigest([{ evidenceId: "[ghost]", summary: "invented" }], new Set(["e1"]));
+    expect(out).toEqual([]);
+  });
+
+  it("treats the bracketed and bare forms of the same id as one (dedupe after normalize)", () => {
+    const raw: DigestItem[] = [
+      { evidenceId: "[e1]", summary: "first" },
+      { evidenceId: "e1", summary: "second" },
+    ];
+    const out = clampDigest(raw, new Set(["e1"]));
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({ evidenceId: "e1", summary: "first" });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,11 @@ export const MAX_CHARS_PER_PAGE    = 4500;
 export const SCRAPE_TIMEOUT_MS     = 20_000;
 export const SCRAPE_CONCURRENCY    = 6;
 
+// Firecrawl throttles to ~2 simultaneous requests per account, so EVERY Firecrawl call
+// (search and scrape, across all questions and both arms) funnels through one shared FIFO
+// queue of this size. Exceeding it yields 429s / timeouts that read as false scrape failures.
+export const FIRECRAWL_CONCURRENCY  = 2;
+
 // -- Orchestration: decompose ------------------------------------------------
 
 export const MIN_QUESTIONS         = 3;

@@ -75,10 +75,14 @@ export function clampDigest(raw: DigestItem[], validIds: Set<string>): DigestIte
   const seen = new Set<string>();
   const out: DigestItem[] = [];
   for (const item of raw) {
-    if (!validIds.has(item.evidenceId)) continue; // invented id — drop
-    if (seen.has(item.evidenceId)) continue; // duplicate id — keep first only
-    seen.add(item.evidenceId);
-    out.push({ evidenceId: item.evidenceId, summary: item.summary.slice(0, MAX_DIGEST_SUMMARY_CHARS) });
+    // The model was shown ids as "[<id>]" and often echoes them WITH the brackets. Strip a
+    // matched surrounding pair before matching, and emit the BARE id so downstream lookups
+    // (formatDigestForCommittee, by e.id) hit. Real ids are hex hashes — never bracketed.
+    const id = item.evidenceId.replace(/^\[(.*)\]$/, "$1");
+    if (!validIds.has(id)) continue; // invented id — drop
+    if (seen.has(id)) continue; // duplicate id — keep first only
+    seen.add(id);
+    out.push({ evidenceId: id, summary: item.summary.slice(0, MAX_DIGEST_SUMMARY_CHARS) });
   }
   return out;
 }

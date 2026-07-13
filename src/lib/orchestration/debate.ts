@@ -13,12 +13,28 @@
  * Everything here is computed from data the committee already produces (confidences, cited-id sets,
  * response stances); nothing invents a score.
  */
-import type { AgentRoleT, Claim } from "../schemas/claim";
+import type { AgentRoleT, Claim, DebateResponse } from "../schemas/claim";
 
 /** One conversational round: every participating role's claim for that round. */
 export interface DebateRound {
   round: number; // 0 = independent opening; >=1 = conversational
   claims: Claim[]; // one per role; each carries its `responses` (edges to peers)
+}
+
+/**
+ * Canonical role order — same as committee.ts ROLES. Every ordering the debate produces
+ * (transcript lines, contention pairs) keys off this so output is deterministic regardless
+ * of the order the async committee returns claims in.
+ */
+const ROLE_ORDER: AgentRoleT[] = ["historian", "operator", "investor", "skeptic"];
+
+/** True iff two id lists carry the same set of ids (order- and duplicate-insensitive). */
+function sameIdSet(a: string[], b: string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  if (sa.size !== sb.size) return false;
+  for (const id of sa) if (!sb.has(id)) return false;
+  return true;
 }
 
 /**
@@ -32,4 +48,166 @@ export interface Contention {
   roles: [AgentRoleT, AgentRoleT];
   type: "evidential" | "interpretive";
   note: string; // short mechanical description (which claims clash, over which ids)
+}
+
+/**
+ * Does the opening round already AGREE, so no debate is worth running? Genuine agreement, not
+ * shared uncertainty: nobody flags a contradiction, confidences are tight (spread below `spread`),
+ * AND the whole committee is at/above the confidence floor. A cluster of low-confidence claims that
+ * happen to sit close together is NOT consensus — it's four roles equally unsure, which is exactly
+ * the case debate (and retrieval) should dig into. Computed purely from the committee's own real
+ * confidences and cited-id sets; nothing is invented.
+ */
+export function roundOneConsensus(
+  claims: Claim[],
+  { spread, minConfidence }: { spread: number; minConfidence: number },
+): boolean {
+  if (claims.length === 0) return false;
+  if (claims.some((c) => c.contradictingEvidenceIds.length > 0)) return false;
+  const confidences = claims.map((c) => c.confidence);
+  const min = Math.min(...confidences);
+  const max = Math.max(...confidences);
+  if (min < minConfidence) return false;
+  return max - min < spread;
+}
+
+/** Every (fromRole → targetRole) pair carrying a "rebut" stance in a round, as `from>target` keys. */
+function rebuttalPairs(round: DebateRound): Set<string> {
+  const pairs = new Set<string>();
+  for (const claim of round.claims) {
+    for (const r of claim.responses) {
+      if (r.stance === "rebut") pairs.add(`${claim.agentRole}>${r.targetRole}`);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * Mechanical round-over-round movement — the debate's only convergence signal (we never let a role
+ * self-report "I've converged"). `moved` counts roles whose confidence shifted by more than `epsilon`
+ * OR whose supporting/contradicting id-set changed between the rounds. `newRebuttals` counts rebut
+ * edges present in `next` but absent from `prev`, compared by (from→target) PAIR IDENTITY only — never
+ * by fuzzy-matching the free-text `point`. A round that neither moves a position nor opens a fresh
+ * rebuttal has `converged: true`, and the debate stops.
+ */
+export function debateMovement(
+  prev: DebateRound,
+  next: DebateRound,
+  epsilon: number,
+): { moved: number; newRebuttals: number; converged: boolean } {
+  const prevByRole = new Map(prev.claims.map((c) => [c.agentRole, c]));
+  let moved = 0;
+  for (const claim of next.claims) {
+    const before = prevByRole.get(claim.agentRole);
+    if (!before) {
+      // A role that wasn't in the prior round is a new position — count it as movement.
+      moved += 1;
+      continue;
+    }
+    const confidenceMoved = Math.abs(claim.confidence - before.confidence) > epsilon;
+    const supportChanged = !sameIdSet(claim.supportingEvidenceIds, before.supportingEvidenceIds);
+    const contraChanged = !sameIdSet(claim.contradictingEvidenceIds, before.contradictingEvidenceIds);
+    if (confidenceMoved || supportChanged || contraChanged) moved += 1;
+  }
+
+  const prevPairs = rebuttalPairs(prev);
+  let newRebuttals = 0;
+  for (const pair of rebuttalPairs(next)) {
+    if (!prevPairs.has(pair)) newRebuttals += 1;
+  }
+
+  return { moved, newRebuttals, converged: moved === 0 && newRebuttals === 0 };
+}
+
+/**
+ * The challenges this `role` must answer next: every response in the latest round aimed AT it.
+ * These become the "CHALLENGES AIMED AT YOU" block in the role's next-round user message (D2).
+ */
+export function directedChallenges(latestRound: DebateRound, role: AgentRoleT): DebateResponse[] {
+  return latestRound.claims.flatMap((c) => c.responses.filter((r) => r.targetRole === role));
+}
+
+/** Order a round's claims by canonical role order so the rendered transcript is deterministic. */
+function orderedClaims(round: DebateRound): Claim[] {
+  return [...round.claims].sort(
+    (a, b) => ROLE_ORDER.indexOf(a.agentRole) - ROLE_ORDER.indexOf(b.agentRole),
+  );
+}
+
+/**
+ * Compact, deterministic rendering of a debate transcript for the shared system prefix (D2).
+ * One line per claim — `[role] (conf X): conclusion — support[ids]/contra[ids]` — followed by
+ * one indented line per directed response — `→ stance @target: point`. Rounds are emitted in
+ * ascending order and claims within a round in canonical role order, so the text is byte-stable
+ * (a requirement for the L3 prompt cache).
+ */
+export function renderTranscript(rounds: DebateRound[]): string {
+  const lines: string[] = [];
+  for (const round of [...rounds].sort((a, b) => a.round - b.round)) {
+    lines.push(`Round ${round.round}:`);
+    for (const c of orderedClaims(round)) {
+      const support = c.supportingEvidenceIds.join(",");
+      const contra = c.contradictingEvidenceIds.join(",");
+      lines.push(
+        `  [${c.agentRole}] (conf ${c.confidence.toFixed(2)}): ${c.conclusion} — support[${support}]/contra[${contra}]`,
+      );
+      for (const r of c.responses) {
+        lines.push(`    → ${r.stance} @${r.targetRole}: ${r.point}`);
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
+ * Extract the disagreements that SURVIVED the debate, from its final-round claims. A role pair is in
+ * contention when, in the final round, one role `rebut`s the other and the other did NOT `concede`
+ * back (an unresolved rebuttal), OR the two read the same evidence oppositely — one lists an id in
+ * `contradictingEvidenceIds` that the other lists in `supportingEvidenceIds`. Classification is
+ * mechanical and drives gate routing (D5): `evidential` when either contested claim names a
+ * `missingEvidence` gap that retrieval could settle, else `interpretive` (retrieving is futile —
+ * report the fault line). Pairs are ordered and de-duplicated by canonical role order.
+ */
+export function extractContentions(questionId: string, finalClaims: Claim[]): Contention[] {
+  const byRole = new Map(finalClaims.map((c) => [c.agentRole, c]));
+  const contentions: Contention[] = [];
+
+  for (let i = 0; i < ROLE_ORDER.length; i++) {
+    for (let j = i + 1; j < ROLE_ORDER.length; j++) {
+      const roleA = ROLE_ORDER[i];
+      const roleB = ROLE_ORDER[j];
+      const a = byRole.get(roleA);
+      const b = byRole.get(roleB);
+      if (!a || !b) continue;
+
+      const aRebutsB = a.responses.some((r) => r.targetRole === roleB && r.stance === "rebut");
+      const bConcedesA = b.responses.some((r) => r.targetRole === roleA && r.stance === "concede");
+      const bRebutsA = b.responses.some((r) => r.targetRole === roleA && r.stance === "rebut");
+      const aConcedesB = a.responses.some((r) => r.targetRole === roleB && r.stance === "concede");
+      const unresolvedRebuttal = (aRebutsB && !bConcedesA) || (bRebutsA && !aConcedesB);
+
+      const aContra = new Set(a.contradictingEvidenceIds);
+      const bContra = new Set(b.contradictingEvidenceIds);
+      const clashIds = [
+        ...a.supportingEvidenceIds.filter((id) => bContra.has(id)),
+        ...b.supportingEvidenceIds.filter((id) => aContra.has(id)),
+      ];
+      const idClash = clashIds.length > 0;
+
+      if (!unresolvedRebuttal && !idClash) continue;
+
+      const evidential = a.missingEvidence.length > 0 || b.missingEvidence.length > 0;
+      const note = idClash
+        ? `clash over evidence [${[...new Set(clashIds)].join(",")}]`
+        : `unresolved rebuttal between ${roleA} and ${roleB}`;
+      contentions.push({
+        questionId,
+        roles: [roleA, roleB],
+        type: evidential ? "evidential" : "interpretive",
+        note,
+      });
+    }
+  }
+
+  return contentions;
 }

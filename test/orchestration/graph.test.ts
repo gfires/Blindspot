@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { compileResearchGraph, synthesizeReport, computeRecursionLimit } from "@/lib/orchestration/graph";
 import { accumulate } from "@/lib/schemas/state";
+import { fallbackBrief } from "@/lib/schemas/brief";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
 import type { Evidence } from "@/lib/schemas/evidence";
 import type { Claim } from "@/lib/schemas/claim";
@@ -31,6 +32,7 @@ function claim(questionId: string, confidence: number): Claim {
 function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
   return {
     topic: "widgets market",
+    researchBrief: fallbackBrief("widgets market"),
     questions: [],
     evidence: [],
     claims: [],
@@ -39,6 +41,8 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     budgetSpent: 0,
     converged: false,
     searchedQueries: [],
+    answer: "",
+    debateTranscripts: {},
     ...over,
   } as ResearchStateT;
 }

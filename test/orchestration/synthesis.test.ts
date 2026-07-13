@@ -1,0 +1,139 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { Mock } from "vitest";
+import { generateText } from "ai";
+import { answerObjective, recommend, synthesizeReport } from "@/lib/orchestration/graph";
+import type { ResearchBrief } from "@/lib/schemas/brief";
+import type { ResearchStateT, Question } from "@/lib/schemas/state";
+import type { AgentRoleT, Claim, DebateResponse } from "@/lib/schemas/claim";
+import type { DebateRound } from "@/lib/orchestration/debate";
+import { fakeGenResult, assertNoLlmCalls } from "../helpers/mock-ai";
+
+vi.mock("ai", async () => {
+  const actual = await vi.importActual<typeof import("ai")>("ai");
+  return { ...actual, generateText: vi.fn() };
+});
+
+function q(id: string, overrides: Partial<Question> = {}): Question {
+  return { id, text: `q ${id}`, category: "cat", confidence: 0, resolved: false, ...overrides };
+}
+
+function resp(targetRole: AgentRoleT, stance: DebateResponse["stance"], point = "p"): DebateResponse {
+  return { targetRole, stance, point };
+}
+
+function claim(role: AgentRoleT, overrides: Partial<Claim> = {}): Claim {
+  return {
+    id: `q1:${role}:0`,
+    questionId: "q1",
+    agentRole: role,
+    conclusion: `${role} conclusion`,
+    confidence: 0.5,
+    supportingEvidenceIds: [],
+    contradictingEvidenceIds: [],
+    missingEvidence: [],
+    loopIteration: 0,
+    debateRound: 1,
+    responses: [],
+    ...overrides,
+  };
+}
+
+// A final round where the historian rebuts the investor and the investor does not concede, with no
+// named missingEvidence → an unresolved INTERPRETIVE contention (a committee split retrieval can't fix).
+const historian = claim("historian", {
+  conclusion: "prior entrants all died on distribution",
+  responses: [resp("investor", "rebut", "the precedent is survivorship-biased")],
+});
+const investor = claim("investor", { conclusion: "the margin profile can support a venture return" });
+const finalRound: DebateRound = { round: 1, claims: [historian, investor] };
+
+function stateOf(over: Partial<ResearchStateT> = {}): ResearchStateT {
+  const researchBrief: ResearchBrief = {
+    subject: "freight brokerage",
+    objective: "Decide go/no-go on a venture-scale freight brokerage bet",
+    constraints: ["US market"],
+  };
+  return {
+    topic: "freight brokerage",
+    researchBrief,
+    questions: [q("q1")],
+    claims: [historian, investor],
+    debateTranscripts: { q1: [{ round: 0, claims: [historian, investor] }, finalRound] },
+    evidence: [],
+    answer: "",
+    ...over,
+  } as ResearchStateT;
+}
+
+beforeEach(() => {
+  (generateText as Mock).mockReset();
+});
+
+describe("answerObjective (A5)", () => {
+  it("grounds the answer prompt in the objective, the committee claims, and the surviving contention", async () => {
+    (generateText as Mock).mockResolvedValue(
+      fakeGenResult({ answer: "Lean no-go: distribution is the fault line." }, { inputTokens: 80, outputTokens: 40 }),
+    );
+
+    const out = await answerObjective(stateOf());
+    expect(out.answer).toBe("Lean no-go: distribution is the fault line.");
+    expect(out.usage?.label).toBe("synthesis:answer");
+
+    const prompt = (generateText as Mock).mock.calls[0][0].prompt as string;
+    expect(prompt).toContain("Decide go/no-go on a venture-scale freight brokerage bet");
+    expect(prompt).toContain("prior entrants all died on distribution"); // a committee claim
+    expect(prompt).toContain("SPLIT (interpretive)"); // the surviving contention, classified
+    expect(prompt).toContain("US market"); // constraint carried through
+    // Strictly grounded: the prompt forbids new facts/sources.
+    expect(prompt).toContain("Introduce NO new");
+  });
+
+  it("skips the call and returns an empty answer when the objective is empty", async () => {
+    // Clear first so the assertion measures ONLY this call (the shared mock's history is cumulative).
+    (generateText as Mock).mockClear();
+    const out = await answerObjective(
+      stateOf({ researchBrief: { subject: "", objective: "", constraints: [] } }),
+    );
+    expect(out.answer).toBe("");
+    assertNoLlmCalls(); // no objective → nothing to adjudicate → no LLM spend
+  });
+
+  it("degrades to an empty answer on a thrown LLM error (run survives, no throw)", async () => {
+    (generateText as Mock).mockRejectedValue(new Error("provider 500"));
+    const out = await answerObjective(stateOf());
+    expect(out.answer).toBe("");
+    expect(out.usage).toBeUndefined();
+  });
+});
+
+describe("recommend node (A5)", () => {
+  it("attaches the generated answer to state and threads the call usage", async () => {
+    (generateText as Mock).mockResolvedValue(fakeGenResult({ answer: "Landscape: fragmented, low-margin." }));
+    const out = await recommend(stateOf());
+    expect(out.answer).toBe("Landscape: fragmented, low-margin.");
+    expect(out.converged).toBe(true);
+    expect(out.llmCalls).toHaveLength(1);
+    expect(out.llmCalls![0].label).toBe("synthesis:answer");
+  });
+
+  it("still returns a converged state (answer empty) when the answer call fails", async () => {
+    (generateText as Mock).mockRejectedValue(new Error("boom"));
+    const out = await recommend(stateOf());
+    expect(out.answer).toBe("");
+    expect(out.converged).toBe(true);
+    expect(out.llmCalls).toBeUndefined(); // no usage to account for
+  });
+});
+
+describe("synthesizeReport stays pure (A5)", () => {
+  it("attaches objective + answer from state without any LLM call", () => {
+    // Clear here so the assertion measures ONLY synthesizeReport's own calls (the shared mock's
+    // history is cumulative across the file's earlier recommend/answerObjective tests).
+    (generateText as Mock).mockClear();
+    const report = synthesizeReport(stateOf({ answer: "the final answer" }));
+    expect(report.objective).toBe("Decide go/no-go on a venture-scale freight brokerage bet");
+    expect(report.answer).toBe("the final answer");
+    // The load-bearing purity guarantee: synthesizeReport must never call the model.
+    assertNoLlmCalls();
+  });
+});

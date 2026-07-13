@@ -30,7 +30,7 @@ import { ResearchState, type ResearchStateT, type Question } from "../schemas/st
 import { ResearchBriefSchema, fallbackBrief, type ResearchBrief } from "../schemas/brief";
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
-import { managerModel } from "../models/provider";
+import { managerModel, gateModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens } from "./eval";
 import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
@@ -560,6 +560,14 @@ export interface QuestionReport {
  */
 export interface ResearchReport {
   topic: string;
+  /** The intake objective this run set out to satisfy (A5) — echoed from state.researchBrief. */
+  objective: string;
+  /**
+   * Natural-language adjudication at the objective's altitude (A5): a landscape map for a survey,
+   * a graded go/no-go + fault lines for a decision, with committee splits called out. Empty string
+   * when no answer was produced (no objective, or the answer step degraded).
+   */
+  answer: string;
   questions: QuestionReport[];
   unresolvedQuestions: Question[];
   /** Every source retrieved — the nodes of the evidence graph. */
@@ -589,6 +597,10 @@ export function synthesizeReport(state: ResearchStateT): ResearchReport {
 
   return {
     topic: state.topic,
+    // objective + answer are read straight from state (both LLM-produced upstream, in intake and
+    // the recommend node) — synthesizeReport itself stays PURE: no LLM call, structural only.
+    objective: state.researchBrief.objective,
+    answer: state.answer,
     questions,
     unresolvedQuestions: state.questions.filter((q) => !q.resolved),
     evidence: state.evidence,
@@ -598,19 +610,115 @@ export function synthesizeReport(state: ResearchStateT): ResearchReport {
   };
 }
 
+// No .min()/.max() — LLM-output schema. Steer with .describe(); the answer is free text.
+const AnswerSchema = z.object({
+  answer: z
+    .string()
+    .describe(
+      "the final adjudication written at the objective's altitude (landscape map for a survey; " +
+        "graded go/no-go + fault lines for a decision), grounded STRICTLY in the committee claims " +
+        "and contentions given — introduce no new facts and cite no new sources",
+    ),
+});
+
+/**
+ * The recommend node's ANSWER step (A5): ONE gateModel (Sonnet, for quality) call that writes a
+ * natural-language answer at the OBJECTIVE's altitude, grounded STRICTLY in the per-question claims
+ * and the surviving contentions already in state — NO new evidence, NO retrieval. It adapts the
+ * OUTPUT altitude to the input (a survey gets a landscape map; a decision gets a graded verdict +
+ * the fault lines) and calls out any surviving committee split as evidential vs interpretive.
+ *
+ * Degrades to an empty answer on any generation error — the pure structural report always survives.
+ * The budget gate is OUTSIDE the try (a hit cap must halt the run). Exported for direct unit testing.
+ */
+export async function answerObjective(
+  state: ResearchStateT,
+): Promise<{ answer: string; usage?: AnnotatedUsage }> {
+  const objective = state.researchBrief.objective.trim();
+  // No objective → nothing to adjudicate at; skip the call (answer stays empty).
+  if (!objective) return { answer: "" };
+
+  const costTracker = getActiveCostTracker();
+  costTracker?.check();
+
+  // Grounding, per question: the committee's FINAL-round positions and any surviving contention.
+  // Pulled from the debate transcript when present (the durable final round), else the raw claims.
+  const sections = state.questions.map((q) => {
+    const rounds = state.debateTranscripts[q.id];
+    const finalRound = rounds?.[rounds.length - 1];
+    const claims = finalRound ? finalRound.claims : state.claims.filter((c) => c.questionId === q.id);
+    const claimLines = claims.length
+      ? claims.map((c) => `    - [${c.agentRole}] (conf ${c.confidence.toFixed(2)}) ${c.conclusion}`).join("\n")
+      : "    - (no committee claims)";
+    const contentions = finalRound ? extractContentions(q.id, finalRound.claims) : [];
+    const contentionLines = contentions.length
+      ? contentions.map((ct) => `    - SPLIT (${ct.type}) ${ct.roles.join(" vs ")}: ${ct.note}`).join("\n")
+      : "    - (committee aligned — no surviving split)";
+    return `  Question ${q.id} (${q.category}): ${q.text}\n  Committee positions:\n${claimLines}\n  Contentions:\n${contentionLines}`;
+  });
+
+  const constraints = state.researchBrief.constraints;
+  const constraintsLine = constraints.length ? constraints.join("; ") : "(none stated)";
+
+  const prompt = [
+    "You are the research manager writing the FINAL adjudication for an opportunity/market analysis.",
+    "",
+    `OBJECTIVE (write the answer that satisfies THIS): ${objective}`,
+    `CONSTRAINTS: ${constraintsLine}`,
+    "",
+    "Ground your answer STRICTLY in the committee's claims and contentions below. Introduce NO new",
+    "facts and cite NO new sources — you are adjudicating what the committee already found, not researching.",
+    "",
+    "Match the objective's ALTITUDE:",
+    "- a broad survey → a landscape map: the shape of the opportunity across the questions.",
+    "- a go/no-go or thesis → a graded verdict (e.g. lean go / no-go / not yet) AND the fault lines the",
+    "  decision turns on.",
+    "Wherever the committee split, say so explicitly and name whether the split is EVIDENTIAL (a gap more",
+    "evidence could close) or INTERPRETIVE (the roles read the same evidence differently) — do not paper over it.",
+    "",
+    "COMMITTEE FINDINGS:",
+    ...sections,
+  ].join("\n");
+
+  try {
+    const { output: object, usage } = await generateText({
+      model: gateModel,
+      output: Output.object({ schema: AnswerSchema }),
+      prompt,
+      maxRetries: LLM_MAX_RETRIES,
+    });
+    const annotated = toAnnotatedUsage(usage, gateModel.modelId, "synthesis:answer");
+    costTracker?.record({ model: gateModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+    getActiveTrace()?.logLlmCall("synthesis:answer", { model: gateModel.modelId, prompt }, object, usage);
+    return { answer: object.answer, usage: annotated };
+  } catch (err) {
+    getActiveTrace()?.log("synthesis_answer_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return { answer: "" };
+  }
+}
+
 /**
  * Assemble the final output. Folds each question's aggregate confidence back into
- * `state.questions` and marks the run converged. The compiled graph's final state
- * therefore carries settled confidences; call `synthesizeReport(finalState)` for the
- * full structured report.
+ * `state.questions`, writes the objective-level `answer` (answerObjective, A5), and marks the run
+ * converged. The compiled graph's final state therefore carries settled confidences AND the answer;
+ * call `synthesizeReport(finalState)` for the full structured report.
  */
-async function recommend(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+export async function recommend(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   const report = synthesizeReport(state);
   const questions: Question[] = report.questions.map((qr) => ({
     ...qr.question,
     confidence: qr.confidence,
   }));
-  return { questions, converged: true };
+
+  const { answer, usage } = await answerObjective(state);
+  getActiveTrace()?.log("synthesis:answer", {
+    produced: answer.length > 0,
+    objective: state.researchBrief.objective,
+  });
+
+  return { questions, converged: true, answer, ...(usage ? { llmCalls: [usage] } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -732,6 +840,7 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       claimsCount: finalState.claims.length,
       loopIterations: finalState.loopIteration,
       converged: finalState.converged,
+      answerProduced: finalState.answer.length > 0,
       budgetSpent: finalState.budgetSpent,
       budgetRemaining: finalState.budgetRemaining,
       firecrawlCalls: finalState.firecrawlCalls,

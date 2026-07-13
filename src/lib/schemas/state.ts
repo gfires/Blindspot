@@ -118,5 +118,11 @@ export const ResearchState = Annotation.Root({
     reducer: mergeTranscripts,
     default: () => ({}),
   }),
+  /**
+   * The recommend node's natural-language answer at the objective's altitude (A5), grounded
+   * strictly in the per-question claims + surviving contentions. Empty string when no answer was
+   * produced (intake had no objective, or the answer call degraded). Replace reducer.
+   */
+  answer: Annotation<string>({ reducer: (_prev, next) => next, default: () => "" }),
 });
 export type ResearchStateT = typeof ResearchState.State;

@@ -283,6 +283,11 @@ async function runGraphStreamingInner(
           }
 
           case "recommend": {
+            // The recommend node's answerObjective step (A5) is one LLM call; fold its usage
+            // into the running total so the streamed token rollup stays complete.
+            const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
+            allLlmCalls.push(...usages);
+            for (const u of usages) send({ type: "research:usage", usage: u });
             break;
           }
         }
@@ -327,6 +332,7 @@ async function runGraphStreamingInner(
     budgetSpent: finalState.budgetSpent,
     budgetRemaining: finalState.budgetRemaining,
     converged: finalState.converged,
+    answerProduced: finalState.answer.length > 0,
     llmCallCount: allLlmCalls.length,
     firecrawlCalls: totalFirecrawlCalls,
     firecrawlCredits: totalFirecrawlCredits,

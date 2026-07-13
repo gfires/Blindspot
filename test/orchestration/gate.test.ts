@@ -37,6 +37,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     gateScores: [],
     digests: {},
     debateTranscripts: {},
+    answer: "",
     ...over,
   };
 }

@@ -27,11 +27,12 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 
 import { ResearchState, type ResearchStateT, type Question } from "../schemas/state";
+import { ResearchBriefSchema, fallbackBrief, type ResearchBrief } from "../schemas/brief";
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
+import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 
@@ -58,7 +59,8 @@ import { allocateBudget } from "./gate";
  * need `4 + 4*maxLoops + 1` supersteps; we add a small margin.
  */
 export function computeRecursionLimit(maxLoops: number): number {
-  return 5 + 4 * maxLoops + 5; // needed supersteps + margin
+  // +1 base for the intake node (a fixed superstep in front of decompose).
+  return 6 + 4 * maxLoops + 5; // needed supersteps + margin
 }
 
 export function scopeEvidenceToQuestions(
@@ -120,6 +122,82 @@ export function queriesToSearch(
     q.searchQueries?.length ? q.searchQueries : [q.text],
   );
   return [...new Set(candidates)].filter((qq) => !already.has(qq));
+}
+
+// ---------------------------------------------------------------------------
+// intake
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the raw topic into a ResearchBrief with ONE manager (Haiku) call, so the pipeline
+ * adapts to whatever came in — a bare phrase, a sharper niche, a specific thesis, an
+ * investment decision — instead of hardcoding one shape. The prompt keeps the PRODUCT
+ * MANDATE: this is opportunity/market analysis, not open-ended research. A bare phrase
+ * yields a survey objective + empty constraints (behaving as today); a thesis yields the
+ * extracted ask. `objective` is the load-bearing field every downstream node reads.
+ *
+ * A bad brief must never kill a run: the budget gate is OUTSIDE the try (a hit cap must
+ * halt the run), but any generation error degrades to fallbackBrief(topic) — mirroring the
+ * digest node. Exported for direct unit testing.
+ */
+export async function intake(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+  const topic = state.topic;
+
+  // Budget gate OUTSIDE the try: a BudgetExceededError must propagate to halt the run,
+  // not be swallowed into a fallback brief.
+  const costTracker = getActiveCostTracker();
+  costTracker?.check();
+
+  const prompt = [
+    "You are the research manager for an OPPORTUNITY / MARKET ANALYSIS product (a committee",
+    "of a historian, operator, investor and skeptic will evaluate the business case). Read the",
+    "input below and produce a brief that points that machinery at the REAL ask.",
+    "",
+    `INPUT: ${topic}`,
+    "",
+    "Infer three things:",
+    "- subject: the entity or space to search ABOUT (a short noun phrase).",
+    "- objective: ONE statement of what output would satisfy THIS input, in the product's terms.",
+    "  A bare industry phrase → a survey of the opportunity landscape. A sharper niche → a survey",
+    "  scoped to it. A thesis or investment decision → the specific bet to adjudicate (a go/no-go,",
+    "  a verdict). Do NOT turn it into generic open-ended research — keep the business-opportunity lens.",
+    "- constraints: explicit scope boundaries, requirements, or decision criteria the INPUT stated",
+    "  (budget, geography, timeframe, buyer segment, the specific claim to test). If the input is a",
+    "  bare phrase that states none, return an EMPTY list — do not invent constraints.",
+  ].join("\n");
+
+  try {
+    const { output: object, usage } = await generateText({
+      model: managerModel,
+      output: Output.object({ schema: ResearchBriefSchema }),
+      prompt,
+      maxRetries: LLM_MAX_RETRIES,
+    });
+
+    const annotated = toAnnotatedUsage(usage, managerModel.modelId, "intake");
+    costTracker?.record({ model: managerModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
+
+    const trace = getActiveTrace();
+    if (trace) {
+      trace.logLlmCall("intake", { model: managerModel.modelId, prompt }, object, usage);
+    }
+
+    // Clamp constraint count in code — the schema carries no max (providers strip it).
+    const researchBrief: ResearchBrief = {
+      subject: object.subject,
+      objective: object.objective,
+      constraints: object.constraints.slice(0, MAX_BRIEF_CONSTRAINTS),
+    };
+    getActiveTrace()?.log("intake", { researchBrief });
+
+    return { researchBrief, llmCalls: [annotated] };
+  } catch (err) {
+    // Degrade to a survey brief on any generation error — a run must never die on a bad brief.
+    getActiveTrace()?.log("intake_failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return { researchBrief: fallbackBrief(topic) };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -515,13 +593,15 @@ async function recommend(state: ResearchStateT): Promise<Partial<ResearchStateT>
 // ---------------------------------------------------------------------------
 
 const workflow = new StateGraph(ResearchState)
+  .addNode("intake", intake)
   .addNode("decompose", decompose)
   .addNode("retrieve", retrieve)
   .addNode("debate", debate)
   .addNode("gate", gate)
   .addNode("refine", refine)
   .addNode("recommend", recommend)
-  .addEdge(START, "decompose")
+  .addEdge(START, "intake")
+  .addEdge("intake", "decompose")
   .addEdge("decompose", "retrieve")
   .addEdge("retrieve", "debate")
   .addEdge("debate", "gate")

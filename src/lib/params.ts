@@ -32,6 +32,12 @@ export const SCRAPE_CONCURRENCY    = 6;
 // queue of this size. Exceeding it yields 429s / timeouts that read as false scrape failures.
 export const FIRECRAWL_CONCURRENCY  = 2;
 
+// -- Orchestration: intake ---------------------------------------------------
+
+// The intake node reads the raw topic into a ResearchBrief. `constraints` is an LLM-output
+// array (no schema max — providers strip it), so we clamp its length here in code.
+export const MAX_BRIEF_CONSTRAINTS = 8;
+
 // -- Orchestration: decompose ------------------------------------------------
 
 export const MIN_QUESTIONS         = 3;

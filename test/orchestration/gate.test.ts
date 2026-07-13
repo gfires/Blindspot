@@ -3,6 +3,7 @@ import type { Mock } from "vitest";
 import { gateShortCircuit, allocateBudget } from "@/lib/orchestration/gate";
 import { MAX_LOOP_ITERATIONS } from "@/lib/params";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
+import { fallbackBrief } from "@/lib/schemas/brief";
 import { fakeGenResult, assertNoLlmCalls } from "../helpers/mock-ai";
 
 // Only generateText is mocked — see test/helpers/mock-ai.ts. The no-progress path must
@@ -20,6 +21,7 @@ function q(id: string, overrides: Partial<Question> = {}): Question {
 function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
   return {
     topic: "widgets market",
+    researchBrief: fallbackBrief("widgets market"),
     questions: [q("q1")],
     evidence: [],
     claims: [],

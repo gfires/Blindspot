@@ -1,6 +1,7 @@
 import { Annotation } from "@langchain/langgraph";
 import type { Evidence } from "./evidence";
 import type { Claim } from "./claim";
+import { type ResearchBrief, fallbackBrief } from "./brief";
 import type { AnnotatedUsage } from "../orchestration/eval";
 import type { DigestItem } from "../orchestration/digest";
 import type { DebateRound } from "../orchestration/debate";
@@ -55,6 +56,15 @@ export const accumulate = (prev: number, delta: number): number => prev + delta;
 
 export const ResearchState = Annotation.Root({
   topic: Annotation<string>,
+  /**
+   * The intake node's reading of the raw topic (subject/objective/constraints). The manager
+   * owns full replacement, like `questions`; defaults to an empty fallback brief so the channel
+   * is always populated even before intake runs (and if intake degrades).
+   */
+  researchBrief: Annotation<ResearchBrief>({
+    reducer: (_prev, next) => next,   // manager owns full replacement
+    default: () => fallbackBrief(""),
+  }),
   questions: Annotation<Question[]>({
     reducer: (_prev, next) => next,   // manager owns full replacement
     default: () => [],

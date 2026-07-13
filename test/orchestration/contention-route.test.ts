@@ -4,6 +4,7 @@ import { allocateBudget } from "@/lib/orchestration/gate";
 import { fakeGenResult, assertNoLlmCalls } from "../helpers/mock-ai";
 import type { Contention, DebateRound } from "@/lib/orchestration/debate";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
+import { fallbackBrief } from "@/lib/schemas/brief";
 import type { AgentRoleT, Claim, DebateResponse } from "@/lib/schemas/claim";
 
 vi.mock("ai", async () => {
@@ -65,6 +66,7 @@ function resp(targetRole: AgentRoleT, stance: DebateResponse["stance"]): DebateR
 function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
   return {
     topic: "widgets",
+    researchBrief: fallbackBrief("widgets"),
     questions: [q("q1")],
     evidence: [],
     claims: [],

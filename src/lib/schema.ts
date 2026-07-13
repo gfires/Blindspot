@@ -63,7 +63,7 @@ export const ScoresSchema = z.object({
 });
 export type Scores = z.infer<typeof ScoresSchema>;
 
-/** A named software vendor detected in the ecosystem. */
+/** A named software vendor detected in the ecosystem — strengths, weaknesses, and pricing. */
 export const VendorSchema = z.object({
   name: z.string(),
   note: z.string(),

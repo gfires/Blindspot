@@ -26,7 +26,7 @@ import { domainOf, truncate } from "../format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "../blocklist";
 import { getCache, setCache } from "../scrape-cache";
 import { getSearchCache, setSearchCache } from "../search-cache";
-import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR } from "../params";
+import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, FIRECRAWL_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR } from "../params";
 import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "../triage";
 import { type Evidence, contentHash } from "./store";
 
@@ -56,9 +56,9 @@ export function makeFirecrawl(): FirecrawlApp {
 type Clock = () => number;
 
 /**
- * Run every intent's search query in parallel. Emits search:begin/done per intent, each
- * carrying that intent's latency (ms). Failures on individual intents are swallowed (that
- * intent contributes no hits) so one flaky query can't fail the whole scan.
+ * Run intent search queries with bounded concurrency (FIRECRAWL_CONCURRENCY). Emits
+ * search:begin/done per intent. Failures on individual intents are swallowed so one
+ * flaky query can't fail the whole scan.
  */
 async function searchAllIntents(
   app: FirecrawlApp,
@@ -67,10 +67,15 @@ async function searchAllIntents(
   now: Clock,
 ): Promise<{ hits: SearchHit[]; apiCalls: number }> {
   const resultsPerIntent = RESULTS_PER_INTENT;
+  const results: SearchHit[][] = new Array(intents.length);
   let apiCalls = 0;
+  let next = 0;
 
-  const perIntent = await Promise.all(
-    intents.map(async (intent) => {
+  const worker = async () => {
+    while (true) {
+      const i = next++;
+      if (i >= intents.length) return;
+      const intent = intents[i];
       onEvent({ type: "search:begin", intent: intent.label });
       const t0 = now();
       try {
@@ -78,7 +83,8 @@ async function searchAllIntents(
         if (cached) {
           const hits: SearchHit[] = cached.map((d) => ({ ...d, intent: intent.label }));
           onEvent({ type: "search:done", intent: intent.label, count: hits.length, ms: now() - t0 });
-          return hits;
+          results[i] = hits;
+          continue;
         }
 
         apiCalls++;
@@ -93,15 +99,17 @@ async function searchAllIntents(
           }));
         void setSearchCache(intent.query, hits.map(({ url, title, snippet }) => ({ url, title, snippet })));
         onEvent({ type: "search:done", intent: intent.label, count: hits.length, ms: now() - t0 });
-        return hits;
+        results[i] = hits;
       } catch {
         onEvent({ type: "search:done", intent: intent.label, count: 0, ms: now() - t0 });
-        return [];
+        results[i] = [];
       }
-    }),
-  );
+    }
+  };
 
-  return { hits: perIntent.flat(), apiCalls };
+  const workerCount = Math.min(FIRECRAWL_CONCURRENCY, intents.length);
+  await Promise.all(Array.from({ length: workerCount }, worker));
+  return { hits: results.flat(), apiCalls };
 }
 
 /**
@@ -378,8 +386,13 @@ export async function search(
   // Track per-URL snippet and the query that surfaced each URL first.
   const metaByUrl = new Map<string, { snippet: string; sourceQuery: string }>();
 
-  const perQuery = await Promise.all(
-    queries.map(async (query) => {
+  const perQuery: SearchHit[][] = new Array(queries.length);
+  let nextQ = 0;
+  const searchWorker = async () => {
+    while (true) {
+      const qi = nextQ++;
+      if (qi >= queries.length) return;
+      const query = queries[qi];
       try {
         const cached = await getSearchCache(query);
         const raw = cached
@@ -396,12 +409,14 @@ export async function search(
               void setSearchCache(query, hits);
               return hits;
             })();
-        return raw.map((h) => ({ ...h, intent: query }));
+        perQuery[qi] = raw.map((h) => ({ ...h, intent: query }));
       } catch {
-        return [];
+        perQuery[qi] = [];
       }
-    }),
-  );
+    }
+  };
+  const searchWorkerCount = Math.min(FIRECRAWL_CONCURRENCY, queries.length);
+  await Promise.all(Array.from({ length: searchWorkerCount }, searchWorker));
 
   const hits: SearchHit[] = perQuery.flat();
   for (const h of hits) {

@@ -20,11 +20,15 @@ export const RESULTS_PER_INTENT    = 8;
 export const MAX_SCRAPE            = 22;
 export const QUOTA_FLOOR           = 2;
 
+// -- Baseline: Firecrawl concurrency -----------------------------------------
+
+export const FIRECRAWL_CONCURRENCY = 2;
+
 // -- Baseline: scrape --------------------------------------------------------
 
-export const MAX_CHARS_PER_PAGE    = 4500;
+export const MAX_CHARS_PER_PAGE    = 4000;
 export const SCRAPE_TIMEOUT_MS     = 20_000;
-export const SCRAPE_CONCURRENCY    = 6;
+export const SCRAPE_CONCURRENCY    = FIRECRAWL_CONCURRENCY;
 
 // -- Orchestration: decompose ------------------------------------------------
 

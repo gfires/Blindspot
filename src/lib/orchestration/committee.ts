@@ -35,7 +35,7 @@ import {
 } from "../params";
 import { formatDigestForCommittee, type DigestItem } from "./digest";
 import { limiterForModel } from "./limiter";
-import { renderTranscript, roundOneConsensus, debateMovement, type DebateRound } from "./debate";
+import { renderTranscript, roundOneConsensus, debateMovement, directedChallenges, type DebateRound } from "./debate";
 
 /**
  * Calibration rules appended to every role prompt. Kept identical across roles so that a
@@ -303,14 +303,11 @@ export function buildDebateMessages(
       : {}),
   };
 
-  // Challenges aimed at THIS role, in the latest round. Walk the round's claims (each claim's
-  // agentRole is the challenger) rather than directedChallenges() so we can label who raised each
-  // point — the same set that helper surfaces, enriched with the source role for the prompt.
+  // Challenges aimed at THIS role, in the latest round — directedChallenges is the single source of
+  // truth and tags each with the peer that raised it (its `from`), so we render who challenged whom.
   const latestRound = transcript[transcript.length - 1];
-  const challengeLines = (latestRound?.claims ?? []).flatMap((c) =>
-    c.responses
-      .filter((r) => r.targetRole === role)
-      .map((r) => `[${c.agentRole}] ${r.stance}s your position (${r.stance}): ${r.point}`),
+  const challengeLines = (latestRound ? directedChallenges(latestRound, role) : []).map(
+    ({ from, response }) => `[${from}] ${response.stance}s your position (${response.stance}): ${response.point}`,
   );
   const challengeBlock = challengeLines.length
     ? ["CHALLENGES AIMED AT YOU — you MUST answer each below:", ...challengeLines, ""]

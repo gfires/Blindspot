@@ -133,7 +133,9 @@ describe("directedChallenges", () => {
     };
     const forSkeptic = directedChallenges(latest, "skeptic");
     expect(forSkeptic).toHaveLength(2);
-    expect(forSkeptic.every((r) => r.targetRole === "skeptic")).toBe(true);
+    expect(forSkeptic.every((c) => c.response.targetRole === "skeptic")).toBe(true);
+    // each challenge is tagged with the peer that raised it (historian rebut, operator concede)
+    expect(forSkeptic.map((c) => c.from).sort()).toEqual(["historian", "operator"]);
   });
 });
 

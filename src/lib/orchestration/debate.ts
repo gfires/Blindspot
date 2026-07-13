@@ -120,11 +120,27 @@ export function debateMovement(
 }
 
 /**
- * The challenges this `role` must answer next: every response in the latest round aimed AT it.
- * These become the "CHALLENGES AIMED AT YOU" block in the role's next-round user message (D2).
+ * A challenge aimed at a role, paired with WHO raised it. The response itself only names its
+ * target and stance — the challenger is the `agentRole` of the claim that owns the response — so we
+ * surface `from` here rather than denormalizing a source role onto every DebateResponse (which,
+ * being an LLM output field, would just be a chance for a model to misstate its own role).
  */
-export function directedChallenges(latestRound: DebateRound, role: AgentRoleT): DebateResponse[] {
-  return latestRound.claims.flatMap((c) => c.responses.filter((r) => r.targetRole === role));
+export interface DirectedChallenge {
+  from: AgentRoleT;
+  response: DebateResponse;
+}
+
+/**
+ * The challenges this `role` must answer next: every response in the latest round aimed AT it, each
+ * tagged with the peer that raised it. Single source of truth for the "CHALLENGES AIMED AT YOU"
+ * block in the role's next-round user message (D2).
+ */
+export function directedChallenges(latestRound: DebateRound, role: AgentRoleT): DirectedChallenge[] {
+  return latestRound.claims.flatMap((c) =>
+    c.responses
+      .filter((r) => r.targetRole === role)
+      .map((response) => ({ from: c.agentRole, response })),
+  );
 }
 
 /** Order a round's claims by canonical role order so the rendered transcript is deterministic. */

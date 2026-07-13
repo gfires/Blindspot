@@ -178,7 +178,13 @@ async function scrapeOne(
   const t0 = now();
   try {
     const res = await withTimeout(
-      app.scrapeUrl(src.url, { formats: ["markdown"], onlyMainContent: true, parsePDF: false }),
+      app.scrapeUrl(src.url, {
+        formats: ["markdown"],
+        onlyMainContent: false,
+        parsePDF: false,
+        waitFor: 2000,
+        timeout: 15000,
+      }),
       SCRAPE_TIMEOUT_MS,
     );
     const md = "markdown" in res ? (res.markdown ?? "") : "";

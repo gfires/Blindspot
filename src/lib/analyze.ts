@@ -149,28 +149,45 @@ platform routes these borrowers to the right underwriter or pre-qualifies them w
 documentation (12-month bank statement programs, asset depletion calculations)." \
 Name the population size if available, what they need, what exists today, and what's missing.
 
-- "opportunityThesis": TWO DENSE PARAGRAPHS (separated by \\n\\n, not a list) that together form \
-a thesis a founder can immediately run with. \
-PARAGRAPH 1 — THE PRODUCT: (1) explicitly tie the bottlenecks above to a SPECIFIC product — \
-name the features, the data flows, the integrations, (2) explain the wedge: which single \
-workflow do you automate first and for whom, (3) name the specific user persona and their \
-current workaround. Cite sources throughout with [id]s. \
-PARAGRAPH 2 — THE TIMING AND MOAT: (1) explain why NOW is the moment (regulatory change, \
-technology inflection, market shift, new data availability — be specific with dates, bill \
-numbers, or technology milestones from the sources), (2) describe the compounding advantage — \
-what gets better with each customer (data flywheel, network effect, integration lock-in), \
-(3) size the initial wedge market if the sources support it (number of practitioners, \
-companies, or transaction volume). Cite sources throughout with [id]s. \
+- "opportunityThesis": TWO LONG, DENSE PARAGRAPHS (separated by \\n\\n, not a list). Each paragraph \
+MUST be 6–8 sentences. You have rich evidence from the sources — USE IT. Thread specific data \
+points, quotes, numbers, product names, and company names from the scraped content into every \
+sentence. Vague generalities are a failure mode. \
+PARAGRAPH 1 — THE PRODUCT (6-8 sentences): (1) explicitly tie the bottlenecks above to a \
+SPECIFIC product — name the features, the data flows, the integrations, (2) explain the wedge: \
+which single workflow do you automate first and for whom, (3) name the specific user persona and \
+their current workaround, (4) describe how the product handles the 2-3 hardest technical \
+challenges (what algorithms, what data inputs, what outputs), (5) name specific incumbent tools \
+and explain exactly where they fall short and what your product does differently. \
+Cite sources throughout with [id]s — aim for 4+ citations in this paragraph. \
+PARAGRAPH 2 — THE TIMING AND MOAT (6-8 sentences): (1) explain why NOW is the moment — \
+regulatory change, technology inflection, market shift, new data availability — be specific with \
+dates, bill numbers, or technology milestones from the sources, (2) name specific recent events \
+(product launches, funding rounds, acquisitions, standards published, APIs released) that create \
+the opening, (3) describe the compounding advantage — what gets better with each customer \
+(data flywheel, network effect, integration lock-in), (4) size the initial wedge market with \
+numbers from the sources (number of practitioners, companies, transaction volume, TAM), \
+(5) explain the expansion path from wedge to adjacent segments. \
+Cite sources throughout with [id]s — aim for 4+ citations in this paragraph. \
 BAD: "AI-driven solutions can address regulatory compliance and administrative burdens." \
 GOOD first paragraph: "A system that ingests borrower documents (W-2s, 1099s, bank statements) \
 via OCR, auto-populates the 1003 Uniform Residential Loan Application, and submits directly to \
 DU/LP would eliminate the 2-4 hour manual verification bottleneck that [3] identifies. The \
-wedge is the 1099/self-employed segment..." \
+wedge is the 1099/self-employed segment — roughly 16 million workers [5] who face 40-60% longer \
+processing times because their income documentation doesn't fit standard templates [3]. Today \
+these borrowers bounce between LoanBeam for income calculation and Encompass for origination, \
+manually re-keying data at each step [8]. The product replaces that handoff with a single \
+pipeline: OCR extraction → income normalization → automated 4506-C verification → DU/LP \
+submission, cutting the per-file cycle from 4 hours to under 20 minutes [3][8]..." \
 GOOD second paragraph: "The timing is driven by CFPB's 2025 Section 1033 open banking rule, \
 which for the first time requires banks to share consumer financial data via API [7] — this \
-makes bank-statement-based income verification programmatic rather than manual. Each lender \
-onboarded adds to a training corpus of underwriting decisions that improves approval-rate \
-prediction across the 380,000 active loan officers [11]..." \
+makes bank-statement-based income verification programmatic rather than manual. Plaid's June \
+2025 launch of their Income Verification API [12] and Fannie Mae's Desktop Underwriter 12.0 \
+release with expanded self-employment rules [9] create a technical opening that didn't exist \
+12 months ago. Each lender onboarded adds to a training corpus of underwriting decisions that \
+improves approval-rate prediction across the 380,000 active loan officers [11]. The initial \
+wedge — non-QM lenders processing 1099/bank-statement loans — represents $200B in annual \
+origination volume across roughly 1,200 specialized shops [5][11]..." \
 Think: someone should be able to read these two paragraphs and start building a PRD.
 
 - "adjacentMarkets": Neighboring industries or verticals with crossover potential. 3-5 items. \

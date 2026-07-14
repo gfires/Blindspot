@@ -23,7 +23,8 @@ Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl ap
 | `src/lib/orchestration/cost-tracker.ts` | Per-run USD cost cap via AsyncLocalStorage (runWithCostTracker) |
 | `src/lib/orchestration/eval.ts` | ArmResult types + runBaseline() + toAnnotatedUsage() + rollupTokens() |
 | `src/lib/supabase.ts` | Supabase client backing the search/scrape/blocklist caches (`blindspot` schema; see `supabase/schema.sql`) |
-| `src/lib/params.ts` | Orchestration tunables (budget, thresholds, loop limits, digest, prompt-cache, model mix, concurrency, debate rounds/consensus) |
+| `src/lib/params.ts` | Orchestration tunables (budget incl. per-loop reservation + recon depth + $ cap, thresholds, loop limits, digest, prompt-cache, model mix, concurrency, debate rounds/consensus) |
+| `src/lib/prompts.ts` | Single home for ALL LLM prompt WORDING (CONFIDENCE_CALIBRATION, ROLE_SYSTEM_PROMPTS, intake/decompose/digest/committee/debate/gate/refine/answer builders). Nodes keep state-shaping; wording lives here |
 | `scripts/compare-arms.ts` | A/B comparison harness (accepts --budget) |
 | `src/lib/research-events.ts` | ResearchEvent union (SSE wire protocol for orchestration) |
 | `src/lib/orchestration/graph-stream.ts` | runGraphStreaming() — streaming graph runner |
@@ -75,6 +76,7 @@ Key routing rules:
 ## Design principles
 
 - **Enforce in code, not prompts.** If a constraint can be checked or clamped programmatically, do it — don't rely on the LLM obeying a prompt instruction. Prompts are hints; code is guarantees. Examples: budget caps, enum membership, ID validation, range clamping.
+- **All prompt WORDING lives in `src/lib/prompts.ts`** (the prose analogue of `params.ts`). When tuning a persona, the calibration, or a node's instructions, edit it there — the orchestration nodes keep only the state-shaping and pass computed pieces into the builder functions. Don't reintroduce inline prompt strings in the nodes. Prompt transparency is a product requirement; one readable file serves it.
 - **No hard caps in LLM output schemas.** Never put `.min()`/`.max()` (lengths, counts, numeric ranges) on Zod schemas passed to `generateText`/`Output.object` — providers strip unsupported JSON-schema keywords, so the model never sees the limit, and client-side validation turns a slightly-long response into a run-killing `NoOutputGeneratedError`. Steer with `.describe()` hints; clamp in code after generation where the bound actually matters.
 - **No vibe floats.** Don't ask LLMs to produce made-up 0-1 scores (confidence, tractability, sensitivity) and then do math on them. The numbers look precise but are arbitrary. Prefer binary/categorical decisions from the LLM and compute quantitative signals from real data (gap counts, confidence spreads, evidence counts).
 - - **Disregard dev time.** When evaluating different approaches, don't consider perceived human dev time at all. Look exclusively for the most correct, consistent, concise, and elegant solution.

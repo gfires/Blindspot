@@ -241,7 +241,9 @@ claim, not the transcript.
 
 ## Configuration
 
-All tunables live in [`src/lib/params.ts`](src/lib/params.ts):
+All tunables live in [`src/lib/params.ts`](src/lib/params.ts); all LLM **prompt wording** (the
+personas, the confidence calibration, and every node's prompt) lives in one readable file,
+[`src/lib/prompts.ts`](src/lib/prompts.ts) — the orchestration nodes keep only the state-shaping.
 
 ### Baseline
 
@@ -416,6 +418,7 @@ src/
         orchestrated/route.ts     orchestrated SSE endpoint (POST, streams ResearchEvents)
   lib/
     params.ts                     all tunable parameters (baseline + orchestration)
+    prompts.ts                    all LLM prompt wording (personas, calibration, node prompts)
     research-events.ts            ResearchEvent union type (SSE wire protocol)
     useResearchStream.ts          client hook + pure reducer for orchestrated research SSE
     schemas/

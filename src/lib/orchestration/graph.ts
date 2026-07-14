@@ -35,6 +35,9 @@ import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, es
 import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, MAX_SEARCH_QUERIES_PER_QUESTION, RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
+// Prompt wording lives in src/lib/prompts.ts; the nodes keep the state-shaping and pass the
+// computed pieces into these builders.
+import { intakePrompt, decomposePrompt, refinePrompt, answerPrompt } from "../prompts";
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
@@ -159,23 +162,7 @@ export async function intake(state: ResearchStateT): Promise<Partial<ResearchSta
   const costTracker = getActiveCostTracker();
   costTracker?.check();
 
-  const prompt = [
-    "You are the research manager for an OPPORTUNITY / MARKET ANALYSIS product (a committee",
-    "of a historian, operator, investor and skeptic will evaluate the business case). Read the",
-    "input below and produce a brief that points that machinery at the REAL ask.",
-    "",
-    `INPUT: ${topic}`,
-    "",
-    "Infer three things:",
-    "- subject: the entity or space to search ABOUT (a short noun phrase).",
-    "- objective: ONE statement of what output would satisfy THIS input, in the product's terms.",
-    "  A bare industry phrase → a survey of the opportunity landscape. A sharper niche → a survey",
-    "  scoped to it. A thesis or investment decision → the specific bet to adjudicate (a go/no-go,",
-    "  a verdict). Do NOT turn it into generic open-ended research — keep the business-opportunity lens.",
-    "- constraints: explicit scope boundaries, requirements, or decision criteria the INPUT stated",
-    "  (budget, geography, timeframe, buyer segment, the specific claim to test). If the input is a",
-    "  bare phrase that states none, return an EMPTY list — do not invent constraints.",
-  ].join("\n");
+  const prompt = intakePrompt(topic);
 
   try {
     const { output: object, usage } = await generateText({
@@ -255,27 +242,7 @@ export async function decompose(state: ResearchStateT): Promise<Partial<Research
     ? constraints.map((c) => `  - ${c}`).join("\n")
     : "  (none stated)";
 
-  const prompt = [
-    "You are the research manager scoping an investigation for an opportunity/market analysis",
-    "committee (a historian, operator, investor and skeptic will evaluate the business case).",
-    "",
-    `SUBJECT: ${subject}`,
-    `OBJECTIVE: ${objective}`,
-    "CONSTRAINTS (respect these — scope every question inside them):",
-    constraintsBlock,
-    "",
-    `Generate ${MIN_QUESTIONS}–${MAX_QUESTIONS} distinct, researchable questions whose answers`,
-    "would together SATISFY the objective. Each must be answerable from web evidence, and the set",
-    "must serve the objective's actual altitude: a broad survey wants wide coverage of the space;",
-    "a go/no-go or thesis wants the questions that would actually settle that specific bet. Stay",
-    "opinionated toward actionable market/opportunity analysis — do NOT drift into generic research.",
-    "",
-    "If (and only if) the objective is a broad survey with no sharper ask, default to covering the",
-    "core facets: market, customers, competition, economics, risks.",
-    "",
-    "For EACH question also give ONE short keyword search query (not the sentence) — the literal",
-    "string we will search — using the space's real jargon, named tools, and specifics.",
-  ].join("\n");
+  const prompt = decomposePrompt({ subject, objective, constraintsBlock });
 
   const { output: object, usage } = await generateText({
     model: managerModel,
@@ -541,23 +508,12 @@ export async function refine(state: ResearchStateT): Promise<Partial<ResearchSta
     (s) => `Question ${s.id}: ${s.text}\n  Evidence gaps: ${s.gapText || "none noted — generate diverse queries"}`,
   );
 
-  const refinePrompt = [
-    "You are a research manager refining search queries for a second pass.",
-    "The committee has reviewed initial evidence and identified gaps.",
-    "For each question below, generate 1–3 NEW, targeted search queries that",
-    "specifically address the noted evidence gaps. Do NOT repeat the original",
-    "question verbatim — instead craft queries that will surface the missing",
-    "information (specific data, counterexamples, named sources, etc.).",
-    "",
-    ...sectionText,
-    "",
-    "Return a searchQueries array for every question ID listed.",
-  ].join("\n");
+  const prompt = refinePrompt(sectionText);
 
   const { output: object, usage } = await generateText({
     model: managerModel,
     output: Output.object({ schema: RefineSchema }),
-    prompt: refinePrompt,
+    prompt,
     maxRetries: LLM_MAX_RETRIES,
   });
 
@@ -566,7 +522,7 @@ export async function refine(state: ResearchStateT): Promise<Partial<ResearchSta
 
   const trace = getActiveTrace();
   if (trace) {
-    trace.logLlmCall("refine", { model: managerModel.modelId, prompt: refinePrompt }, object, usage);
+    trace.logLlmCall("refine", { model: managerModel.modelId, prompt }, object, usage);
   }
 
   // Clamp query count in code — each query is a Firecrawl search, so this bounds spend.
@@ -758,42 +714,7 @@ export async function answerObjective(
   const constraints = state.researchBrief.constraints;
   const constraintsLine = constraints.length ? constraints.join("; ") : "(none stated)";
 
-  const prompt = [
-    "You are the research manager writing the FINAL adjudication for an opportunity/market analysis.",
-    "",
-    `OBJECTIVE (write the answer that satisfies THIS): ${objective}`,
-    `CONSTRAINTS: ${constraintsLine}`,
-    "",
-    "WRITE WITH THE AUTHORITY THE EVIDENCE SUPPORTS. Lead with a clear directional VERDICT, then state",
-    "plainly what the evidence DOES establish (cited), and only THEN the fault lines and what is missing.",
-    "Reason from the BEST AVAILABLE evidence to a firm call: a multi-year survivor on subscription pricing,",
-    "a validated accuracy figure, a structural spending pattern are real signal even when the IDEAL datum",
-    "(exact ARR, private churn, a named competitor's fate) is absent and unlikely to ever be public. Do NOT",
-    "withhold or water down the verdict because ideal data is missing, and do NOT thread hedges through",
-    "every sentence — make the well-supported claims confidently and confine uncertainty to where it",
-    "actually changes the decision. A calibrated but DECISIVE read beats an evenhanded recitation of gaps.",
-    "",
-    "Ground your answer in the committee's positions AND the SOURCES below. CITE specific evidence by",
-    "its [S#] label wherever you state a concrete fact, figure, named entity, or outcome — the reader",
-    "must be able to trace every claim to a source. Reach for the specific data in the SOURCES (the",
-    "numbers, names, and findings), not the committee's paraphrase — use the nuance, do not flatten it.",
-    "Do NOT introduce any fact absent from the SOURCES, and NEVER cite an [S#] that is not listed below",
-    "(invent no sources and no figures). Where the committee named a GAP (a claim with no source cited),",
-    "say what specific evidence is missing rather than papering over it.",
-    "",
-    "Match the objective's ALTITUDE:",
-    "- a broad survey → a landscape map: the shape of the opportunity across the questions.",
-    "- a go/no-go or thesis → a graded verdict (e.g. lean go / no-go / not yet) AND the fault lines the",
-    "  decision turns on.",
-    "Wherever the committee split, say so explicitly and name whether the split is EVIDENTIAL (a gap more",
-    "evidence could close) or INTERPRETIVE (the roles read the same evidence differently) — do not paper over it.",
-    "",
-    "COMMITTEE FINDINGS (each position tagged with the [S#] sources it rests on):",
-    ...sections,
-    "",
-    "SOURCES (cite these by [S#]; each is a real retrieved source with its distilled findings and url):",
-    sourceLines,
-  ].join("\n");
+  const prompt = answerPrompt({ objective, constraintsLine, sections, sourceLines });
 
   // The final answer is non-negotiable and must never ship truncated. Bound the request with an
   // explicit ceiling (SYNTHESIS_ANSWER_MAX_TOKENS) so the model's 128k default can't trigger a

@@ -9,6 +9,8 @@ import { getActiveTrace } from "./trace";
 import { getActiveCostTracker } from "./cost-tracker";
 import { extractContentions, contentionRoute, type Contention } from "./debate";
 import type { Claim } from "../schemas/claim";
+// The gate-classifier prompt wording lives in src/lib/prompts.ts; this file computes the signals.
+import { gatePrompt } from "../prompts";
 
 const GateDecisionSchema = z.object({
   decisions: z.array(z.object({
@@ -199,23 +201,11 @@ export async function allocateBudget(
     `  Claims:\n${qs.claimSummary}`
   );
 
-  const prompt = `You are a research gate classifier deciding which questions need more evidence retrieval.
-
-Current state: loop iteration ${state.loopIteration}, budget remaining ${state.budgetRemaining} calls.
-
-Decision rules (apply in order):
-- If this is iteration 0 (first pass): default to YES unless agents already agree directionally and no specific evidence gaps are named.
-- If 3+ agents name overlapping missing evidence (similar data/sources): YES.
-- If agents reach opposing conclusions on the same sub-question: YES.
-- If all agents agree directionally and gaps are vague ("more data would help"): NO.
-- If budget remaining is low (≤2 calls): only YES for the single highest-gap question.
-
-For each question, decide: should we retrieve more evidence (true) or mark as resolved (false)?
-Explain your decision in one sentence per question.
-
-${sections.join("\n\n")}
-
-Return a decision for every question ID listed above.`;
+  const prompt = gatePrompt({
+    loopIteration: state.loopIteration,
+    budgetRemaining: state.budgetRemaining,
+    sections,
+  });
 
   const costTracker = getActiveCostTracker();
   costTracker?.check();

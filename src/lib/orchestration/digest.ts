@@ -19,6 +19,8 @@ import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import { getActiveTrace } from "./trace";
 import { getActiveCostTracker } from "./cost-tracker";
 import { MAX_DIGEST_SUMMARY_CHARS, LLM_MAX_RETRIES } from "../params";
+// Prompt wording lives in src/lib/prompts.ts; this file keeps the source assembly + clamping logic.
+import { NO_EVIDENCE_NOTICE, digestPrompt } from "../prompts";
 
 /** One compressed source: the evidence id it summarizes and the summary text. */
 export interface DigestItem {
@@ -51,20 +53,10 @@ export const DigestOutputSchema = z.object({
  * numbers/names/quotes preserved and off-topic sources flagged rather than padded.
  */
 export function buildDigestPrompt(question: Question, evidence: Evidence[]): string {
-  const sources = evidence
+  const sourcesBlock = evidence
     .map((e) => `[${e.id}] ${e.title} — ${e.url}\n${e.content}`)
     .join("\n\n---\n\n");
-  return [
-    `QUESTION (${question.category}): ${question.text}`,
-    "",
-    "Compress each source below into ONE digest item, keyed by its EXACT bracketed id.",
-    "Preserve the concrete substance: numbers, named entities, dates, and short direct quotes.",
-    "If a source is off-topic for this question, say so in one clause — do not pad it.",
-    "Return exactly one item per source id. Do not merge, split, or invent ids.",
-    "",
-    "SOURCES:",
-    sources,
-  ].join("\n");
+  return digestPrompt({ question, sourcesBlock });
 }
 
 /**
@@ -94,7 +86,7 @@ export function clampDigest(raw: DigestItem[], validIds: Set<string>): DigestIte
  */
 export function formatDigestForCommittee(evidence: Evidence[], items: DigestItem[]): string {
   if (evidence.length === 0) {
-    return "(no evidence was retrieved for this question yet — you must reflect that in low confidence)";
+    return NO_EVIDENCE_NOTICE;
   }
   const summaryById = new Map(items.map((it) => [it.evidenceId, it.summary]));
   return evidence

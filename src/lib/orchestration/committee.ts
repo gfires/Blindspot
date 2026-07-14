@@ -8,10 +8,12 @@
  * construction, the manager can treat convergence across roles as real signal and divergence
  * as an open question worth more retrieval.
  *
- * FOR FUTURE AGENTS: The system prompts live here IN FULL and readable (prompt transparency is
- * a product requirement). Confidence is the load-bearing output — every prompt is explicit that
- * confidence must be *earned* by evidence, not asserted. See CONFIDENCE_CALIBRATION below; it is
- * shared verbatim across all four roles so the calibration bar is identical regardless of model.
+ * FOR FUTURE AGENTS: All prompt WORDING now lives in one readable place — src/lib/prompts.ts
+ * (prompt transparency is a product requirement). This file keeps the state-shaping and the
+ * cache/ModelMessage plumbing. Confidence is the load-bearing output — every prompt is explicit
+ * that confidence must be *earned* by evidence, not asserted. See CONFIDENCE_CALIBRATION in
+ * prompts.ts; it is shared verbatim across all four roles so the calibration bar is identical
+ * regardless of model.
  *
  * The skeptic deliberately runs on a different model family (see models/provider.ts) so the
  * adversarial check is not just a re-prompt of the same weights.
@@ -33,137 +35,24 @@ import {
   DEBATE_CONSENSUS_MIN_CONFIDENCE,
   DEBATE_CONFIDENCE_EPSILON,
 } from "../params";
+// Prompt WORDING lives in one place (src/lib/prompts.ts). This file keeps the state-shaping and
+// the cache/ModelMessage plumbing; the shared system prefix and the per-role user messages are
+// assembled there from the pieces computed here.
+import {
+  NO_EVIDENCE_NOTICE,
+  stableSystemHead,
+  committeeUserMessage,
+  debateUserMessage,
+} from "../prompts";
 import { formatDigestForCommittee, type DigestItem } from "./digest";
 import { limiterForModel } from "./limiter";
 import { renderTranscript, roundOneConsensus, debateMovement, directedChallenges, type DebateRound } from "./debate";
-
-/**
- * Calibration rules appended to every role prompt. Kept identical across roles so that a
- * confidence of 0.8 means the same thing whoever said it. This is the single most important
- * instruction in the file — the whole loop keys off calibrated confidence.
- */
-const CONFIDENCE_CALIBRATION = `
-CONFIDENCE CALIBRATION — read carefully, this is the most important part of your answer.
-Your \`confidence\` is a probability (0.0–1.0) that your conclusion is correct. It must be EARNED
-by the evidence you were given, not by how plausible your reasoning feels. Follow these rules:
-
-- Anchor LOW and let evidence raise you. With no supporting evidence, you start near 0.2, not 0.5.
-- Penalize sparsity: if supportingEvidenceIds has 0–1 entries, your confidence MUST stay below 0.5.
-  Two-to-three independent, on-point sources is the floor for confidence above 0.6.
-- Credit PROXY and circumstantial evidence toward that floor — it need not be the ideal datum. A firm
-  that has sustained subscription revenue across years and segments, a validated accuracy benchmark, a
-  structural spending pattern are real signal about THIS question even when the perfect number is absent.
-  Do NOT hold your confidence hostage to an IDEAL datum (exact ARR, private churn, a named competitor's
-  documented fate) that is unlikely to ever be public: reason from the best available evidence to the
-  most warranted call, and say what it implies rather than withholding judgment.
-- Penalize contradiction HARD: if contradictingEvidenceIds is non-empty, cap confidence at 0.6, and
-  drop further for every credible source that cuts against you. A single strong contradiction that
-  you cannot explain away should pull you below 0.4.
-- Weak, tangential, or off-topic sources do not count as support. Do not cite an id just to pad the
-  list — only include ids that genuinely bear on THIS conclusion.
-- Name gaps in missingEvidence ONLY when they are load-bearing for THIS conclusion AND plausibly PUBLIC
-  — a named entity, a published benchmark, a documented outcome that more searching could actually
-  surface. Do NOT pad to a fixed count. If the missing datum is structurally PRIVATE (internal
-  financials, churn, exit interviews, proprietary thresholds), note it as a limitation in your
-  conclusion but do NOT list it as a gap to chase (more retrieval will not find it) and do NOT let its
-  absence alone cap your confidence — reason from the best proxy you do have.
-- If the evidence simply does not let you answer, say so: give a low-confidence conclusion and put the
-  real gaps in missingEvidence. A calibrated "I don't know yet" is more valuable than a confident guess.
-- Reserve confidence above 0.85 for conclusions with multiple strong, mutually-reinforcing sources and
-  no unresolved contradiction. That should be rare.
-
-Only reference evidence by its exact id string. Never invent ids and never inline source text.
-`.trim();
-
-/** Distinct incentive for each role. The differences here are the entire point of the committee. */
-const ROLE_SYSTEM_PROMPTS: Record<AgentRoleT, string> = {
-  historian: `
-You are the HISTORIAN on a research committee evaluating a business opportunity.
-
-Your incentive is PRECEDENT. You do not care whether an idea sounds good; you care whether it (or
-something close to it) has been tried before, and what actually happened. Your value to the committee
-is memory the others lack.
-
-For the question asked, hunt the evidence for:
-- Prior attempts, competitors, adjacent products, or historical analogues. Who tried this shape of thing?
-- Outcomes: did they succeed, stall, pivot, or die — and specifically WHY. "Too early", "no distribution",
-  "regulation changed", "incumbent bundled it for free" are the kinds of answers you look for.
-- Repeating patterns across attempts. If three prior entrants all died the same way, that is a strong signal.
-- What is genuinely different NOW (technology, cost curve, regulation, behavior) that could change the outcome
-  versus what is just this cycle's founders assuming they are smarter than the last cohort.
-
-The evidence block always contains sources on this topic — read it before concluding. If those sources
-contain no real PRECEDENT (prior attempts, named competitors, documented outcomes), say the evidence lacks
-precedent and keep confidence low — that absence is itself a finding. But "no precedent in this evidence" and
-"no evidence at all" are different: NEVER claim you were given no evidence or no question. When the evidence is
-purely current-state (regulation, market size, tech) with no historical hooks, note the gap and still ground any
-observations you can in the sources you were given.
-`.trim(),
-
-  operator: `
-You are the OPERATOR on a research committee evaluating a business opportunity.
-
-Your incentive is REALITY ON THE GROUND. You have run this kind of workflow. You care about what actually
-breaks in the day-to-day — the steps that look trivial on a slide and consume hours in practice.
-
-For the question asked, hunt the evidence for:
-- The real workflow today: who does what, in what order, with which tools, and where the friction lives.
-- The failure modes an outsider misses: edge cases, exceptions, handoffs, compliance steps, "the customer
-  always sends it as a scanned PDF", the 20% of cases that are 80% of the pain.
-- Adoption friction: switching cost, training, integration with the systems people already refuse to leave,
-  and the political reasons a working solution still doesn't get bought.
-- Whether a proposed solution survives contact with a messy Tuesday, not a clean demo.
-
-Be specific about mechanism — name the step that breaks and why. If the evidence doesn't actually show you the
-operational detail, don't assume it works smoothly; flag the gap and keep confidence low.
-`.trim(),
-
-  investor: `
-You are the INVESTOR on a research committee evaluating a business opportunity.
-
-Your incentive is RETURN. You are deciding whether to put capital behind this. A real pain point is
-necessary but not sufficient — you care whether there is a fundable BUSINESS here and what the return
-profile looks like.
-
-For the question asked, hunt the evidence for:
-- Market size and structure: how many buyers, how reachable, how concentrated. Is this a venture-scale market
-  or a nice lifestyle business?
-- Willingness and ability to pay: real budget signals, existing spend, deal sizes, contract lengths. Money
-  already changing hands beats stated interest.
-- The return shape: margins, defensibility (moat, network effects, switching cost), and a credible path from
-  wedge to a much larger outcome. Where does this go if it works?
-- The downside: what makes this uninvestable — commoditization, incumbent bundling, regulatory ceilings,
-  or a market too small to matter even if you win it.
-
-Think in terms of a portfolio bet, not enthusiasm. If the evidence doesn't support a fundable return, say so;
-a well-calibrated "not investable on this evidence" is a valid and useful conclusion.
-`.trim(),
-
-  skeptic: `
-You are the SKEPTIC on a research committee evaluating a business opportunity.
-
-Your incentive is DISCONFIRMATION. Assume the historian, operator, and investor are all too optimistic —
-that is your working prior. Your job is not to be balanced; it is to actively hunt for the reasons this
-FAILS. If the idea is genuinely strong it will survive you, and then the committee can trust it.
-
-For the question asked, attack the evidence:
-- Find the strongest reason this does not work: no real demand, a workable status quo, a fatal unit economic,
-  a regulatory wall, a distribution problem with no answer.
-- Interrogate the evidence quality itself: thin sourcing, vendor marketing masquerading as demand, survivorship
-  bias, correlation dressed as causation, sample of one. Weak evidence for a claim IS a reason to doubt it.
-- Steelman the objections others will wave away. Name the specific scenario in which committing to this is a mistake.
-- Refuse to be charitable by default. If something is merely plausible but unproven, treat it as unproven.
-
-Your conclusion should state the most credible way this fails and how likely that is. You may be right that it is
-robust — but only say so if the evidence forced you there against your own effort to break it.
-`.trim(),
-};
 
 const ROLES: AgentRoleT[] = ["historian", "operator", "investor", "skeptic"];
 
 function formatEvidence(evidence: Evidence[]): string {
   if (evidence.length === 0) {
-    return "(no evidence was retrieved for this question yet — you must reflect that in low confidence)";
+    return NO_EVIDENCE_NOTICE;
   }
   let totalChars = 0;
   const blocks: string[] = [];
@@ -192,49 +81,6 @@ export function splitEvidence(
     (e.loopIteration === currentLoop ? fresh : prior).push(e);
   }
   return { fresh, prior };
-}
-
-/**
- * The RESEARCH OBJECTIVE lines prepended to the committee's SHARED system prefix (the intake
- * brief's objective). Kept in one place so the opening round and the conversational rounds
- * render it identically. Empty objective → no block (the prefix is unchanged from pre-A4), so a
- * run with no brief behaves exactly as before. The block is topic-level and role-independent,
- * so it never breaks the byte-identical-across-roles cache invariant.
- */
-function objectivePrefix(objective: string): string[] {
-  const trimmed = objective.trim();
-  if (!trimmed) return [];
-  return [
-    "RESEARCH OBJECTIVE — the committee's shared goal for this whole investigation. Aim your",
-    "role's analysis at THIS ask (do not restate it; use it to sharpen what you look for):",
-    trimmed,
-    "",
-  ];
-}
-
-/**
- * The STABLE head of the committee's shared system prefix: objective + question + evidence block +
- * confidence calibration. For a fixed evidence snapshot (evidence is FROZEN during a debate) this is
- * byte-identical across the opening round (buildCommitteeMessages) and every conversational round
- * (buildDebateMessages), and identical across the three Claude roles.
- *
- * Calibration is the LAST thing in the head — deliberately BEFORE the transcript — so that the head,
- * and then each successive round's transcript, form an APPEND-ONLY prefix: round r's full system
- * message is a byte-prefix of round r+1's. That lets Anthropic's incremental prompt cache serve the
- * head + all prior rounds from cache and bill only the newest round's delta, across rounds, not just
- * across roles within a round. (Before this, calibration trailed the growing transcript, so the
- * cacheable prefix collapsed to the head and every round re-billed the whole transcript.)
- */
-function stableSystemHead(objective: string, question: Question, evidenceBlock: string): string[] {
-  return [
-    ...objectivePrefix(objective),
-    `QUESTION (${question.category}): ${question.text}`,
-    "",
-    "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
-    evidenceBlock,
-    "",
-    CONFIDENCE_CALIBRATION,
-  ];
 }
 
 /**
@@ -315,35 +161,7 @@ export function buildCommitteeMessages(
   const cacheable = role !== "skeptic" && headText.length > PROMPT_CACHE_MIN_CHARS;
   const system = cacheableSystemMessages(headText, null, cacheable);
 
-  const priorClaimBlock = priorClaim
-    ? [
-        "YOUR PRIOR CLAIM — revise it in light of the evidence above (do not restate it unchanged):",
-        `  conclusion: ${priorClaim.conclusion}`,
-        `  confidence: ${priorClaim.confidence.toFixed(2)}`,
-        `  missingEvidence: ${priorClaim.missingEvidence.join("; ") || "(none noted)"}`,
-        "",
-      ]
-    : [];
-
-  const userContent = [
-    // Anchor to the system evidence. The L3 cache split put QUESTION + EVIDENCE in the system
-    // message; without this pointer a role can wrongly conclude nothing was supplied. Uniform
-    // across roles and kept in the user message so the shared system prefix stays cache-identical.
-    "The QUESTION and its EVIDENCE are provided in the system message above. Base your answer only on",
-    "that evidence block, cite sources by their exact bracketed id, and never claim evidence was",
-    "missing when the block is non-empty.",
-    "",
-    ROLE_SYSTEM_PROMPTS[role],
-    "",
-    ...priorClaimBlock,
-    priorClaim
-      ? "Render your UPDATED Claim now. Keep conclusion to 2-3 sentences (under 400 chars) — be direct."
-      : "Render your Claim now. Keep conclusion to 2-3 sentences (under 400 chars) — be direct.",
-    "List the load-bearing evidence gaps (0-3) in missingEvidence (each under 100 chars) — only ones more",
-    "searching could plausibly close, never structurally-private data; leave it empty if none qualify.",
-    "Only fill: conclusion, confidence, supportingEvidenceIds, contradictingEvidenceIds, missingEvidence.",
-  ].join("\n");
-  const user: ModelMessage = { role: "user", content: userContent };
+  const user: ModelMessage = { role: "user", content: committeeUserMessage(role, priorClaim) };
 
   return [...system, user];
 }
@@ -397,39 +215,11 @@ export function buildDebateMessages(
   const challengeLines = (latestRound ? directedChallenges(latestRound, role) : []).map(
     ({ from, response }) => `[${from}] ${response.stance}s your position (${response.stance}): ${response.point}`,
   );
-  const challengeBlock = challengeLines.length
-    ? ["CHALLENGES AIMED AT YOU — you MUST answer each below:", ...challengeLines, ""]
-    : ["No peer challenged you directly last round — revise only if the evidence itself warrants it.", ""];
 
-  const priorTurnBlock = priorTurn
-    ? [
-        "YOUR PRIOR TURN — revise it in light of the debate above (do not restate it unchanged):",
-        `  conclusion: ${priorTurn.conclusion}`,
-        `  confidence: ${priorTurn.confidence.toFixed(2)}`,
-        `  missingEvidence: ${priorTurn.missingEvidence.join("; ") || "(none noted)"}`,
-        "",
-      ]
-    : [];
-
-  const userContent = [
-    // Same anchor as the opening round: the QUESTION + EVIDENCE + transcript live in the system
-    // message; point the role at them so it never confabulates that nothing was supplied.
-    "The QUESTION, its EVIDENCE, and the debate transcript are in the system message above. Base your",
-    "answer only on that evidence block, cite sources by their exact bracketed id, and never claim",
-    "evidence was missing when the block is non-empty.",
-    "",
-    ROLE_SYSTEM_PROMPTS[role],
-    "",
-    ...challengeBlock,
-    ...priorTurnBlock,
-    "Respond to EACH challenge above: concede (cite the exact evidence id that moves you) or hold (cite",
-    "the id that backs you). You may ONLY concede to evidence, never to consensus — if you move, name the",
-    "id that moved you. Then render your UPDATED Claim (conclusion 2-3 sentences, under 400 chars) and your",
-    "`responses` (one directed reply per peer you engage: rebut / concede / extend, each citing an id).",
-    "List the load-bearing evidence gaps (0-3) in missingEvidence (each under 100 chars) — only ones more",
-    "searching could plausibly close, never structurally-private data; leave it empty if none qualify.",
-  ].join("\n");
-  const user: ModelMessage = { role: "user", content: userContent };
+  const user: ModelMessage = {
+    role: "user",
+    content: debateUserMessage({ role, challengeLines, priorTurn }),
+  };
 
   return [...system, user];
 }

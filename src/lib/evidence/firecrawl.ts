@@ -139,6 +139,27 @@ export function dedupeCandidates(hits: SearchHit[]): Candidate[] {
   return [...byUrl.values()];
 }
 
+/**
+ * Cap candidates to the top `perQuery` per source query BEFORE scraping, so we don't pay to scrape
+ * pages we would only discard afterwards. The old flow scraped EVERY deduped candidate and then kept
+ * just the top-k per query (a POST-scrape cap), wasting up to one scrape per dropped candidate. Order
+ * is preserved (search rank), and each candidate is grouped under its FIRST intent — the query that
+ * surfaced it — matching the downstream per-sourceQuery evidence cap. Pure/deterministic; exported
+ * for testing. (Selection by RANK here; task C replaces this criterion with triage relevance.)
+ */
+export function capCandidatesPerQuery(candidates: Candidate[], perQuery: number): Candidate[] {
+  const seen = new Map<string, number>();
+  const out: Candidate[] = [];
+  for (const c of candidates) {
+    const q = c.intents[0] ?? "";
+    const n = seen.get(q) ?? 0;
+    if (n >= perQuery) continue;
+    seen.set(q, n + 1);
+    out.push(c);
+  }
+  return out;
+}
+
 /** Wrap a promise with a timeout so a single hung scrape can't stall the pipeline. */
 function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
   return Promise.race([
@@ -449,7 +470,10 @@ export async function search(
     }
   }
 
-  const candidates = dedupeCandidates(hits);
+  // Cap per source query BEFORE scraping (was: scrape all, then keep top-k) so we only pay to
+  // scrape pages we'll actually use. `k` is RESULTS_PER_QUESTION, the same bound the post-scrape
+  // evidence cap enforces below.
+  const candidates = capCandidatesPerQuery(dedupeCandidates(hits), k);
   const blockset = await loadBlocklist();
 
   const ranked: RankedSource[] = candidates.map((c, i) => ({

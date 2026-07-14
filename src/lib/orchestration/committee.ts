@@ -50,11 +50,23 @@ by the evidence you were given, not by how plausible your reasoning feels. Follo
 - Anchor LOW and let evidence raise you. With no supporting evidence, you start near 0.2, not 0.5.
 - Penalize sparsity: if supportingEvidenceIds has 0–1 entries, your confidence MUST stay below 0.5.
   Two-to-three independent, on-point sources is the floor for confidence above 0.6.
+- Credit PROXY and circumstantial evidence toward that floor — it need not be the ideal datum. A firm
+  that has sustained subscription revenue across years and segments, a validated accuracy benchmark, a
+  structural spending pattern are real signal about THIS question even when the perfect number is absent.
+  Do NOT hold your confidence hostage to an IDEAL datum (exact ARR, private churn, a named competitor's
+  documented fate) that is unlikely to ever be public: reason from the best available evidence to the
+  most warranted call, and say what it implies rather than withholding judgment.
 - Penalize contradiction HARD: if contradictingEvidenceIds is non-empty, cap confidence at 0.6, and
   drop further for every credible source that cuts against you. A single strong contradiction that
   you cannot explain away should pull you below 0.4.
 - Weak, tangential, or off-topic sources do not count as support. Do not cite an id just to pad the
   list — only include ids that genuinely bear on THIS conclusion.
+- Name gaps in missingEvidence ONLY when they are load-bearing for THIS conclusion AND plausibly PUBLIC
+  — a named entity, a published benchmark, a documented outcome that more searching could actually
+  surface. Do NOT pad to a fixed count. If the missing datum is structurally PRIVATE (internal
+  financials, churn, exit interviews, proprietary thresholds), note it as a limitation in your
+  conclusion but do NOT list it as a gap to chase (more retrieval will not find it) and do NOT let its
+  absence alone cap your confidence — reason from the best proxy you do have.
 - If the evidence simply does not let you answer, say so: give a low-confidence conclusion and put the
   real gaps in missingEvidence. A calibrated "I don't know yet" is more valuable than a confident guess.
 - Reserve confidence above 0.85 for conclusions with multiple strong, mutually-reinforcing sources and
@@ -327,7 +339,8 @@ export function buildCommitteeMessages(
     priorClaim
       ? "Render your UPDATED Claim now. Keep conclusion to 2-3 sentences (under 400 chars) — be direct."
       : "Render your Claim now. Keep conclusion to 2-3 sentences (under 400 chars) — be direct.",
-    "List up to 3 specific evidence gaps in missingEvidence (each under 100 chars).",
+    "List the load-bearing evidence gaps (0-3) in missingEvidence (each under 100 chars) — only ones more",
+    "searching could plausibly close, never structurally-private data; leave it empty if none qualify.",
     "Only fill: conclusion, confidence, supportingEvidenceIds, contradictingEvidenceIds, missingEvidence.",
   ].join("\n");
   const user: ModelMessage = { role: "user", content: userContent };
@@ -413,7 +426,8 @@ export function buildDebateMessages(
     "the id that backs you). You may ONLY concede to evidence, never to consensus — if you move, name the",
     "id that moved you. Then render your UPDATED Claim (conclusion 2-3 sentences, under 400 chars) and your",
     "`responses` (one directed reply per peer you engage: rebut / concede / extend, each citing an id).",
-    "List up to 3 specific evidence gaps in missingEvidence (each under 100 chars).",
+    "List the load-bearing evidence gaps (0-3) in missingEvidence (each under 100 chars) — only ones more",
+    "searching could plausibly close, never structurally-private data; leave it empty if none qualify.",
   ].join("\n");
   const user: ModelMessage = { role: "user", content: userContent };
 

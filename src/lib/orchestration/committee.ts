@@ -226,6 +226,43 @@ function stableSystemHead(objective: string, question: Question, evidenceBlock: 
 }
 
 /**
+ * Serialize the shared system prefix into AI-SDK `system` messages, placing Anthropic
+ * prompt-cache breakpoints for CROSS-round reuse.
+ *
+ * The bug this fixes: a single `cacheControl` on ONE system message that GROWS every round
+ * (stable head + an ever-longer transcript) makes each round write a fresh cache entry keyed to
+ * the whole block. Anthropic only re-reads a cached prefix AT a breakpoint, and the sole
+ * breakpoint sat at the moving tail — so nothing was ever re-read across rounds and the cache
+ * read/write ratio was pinned at exactly 2.0 (within-round only: 1 historian write + 2 reads).
+ *
+ * The fix adds a second breakpoint at the STABLE head boundary. The head (objective + question +
+ * evidence + calibration) is byte-identical across every debate round AND across the opening
+ * committee round, so Anthropic serves that large block from cache on every call instead of
+ * re-billing it each round. When `tailText` is present (a debate round), the head and the growing
+ * transcript become two consecutive `system` messages; @ai-sdk/anthropic merges consecutive
+ * system messages into ONE top-level `system` array (one text block + `cache_control` each), so
+ * this stays a normal cached system prompt — NOT a mid-conversation system message — with two
+ * breakpoints, well under Anthropic's limit of four. The trailing breakpoint on the transcript
+ * still gives the within-round reuse across the three Claude roles that already worked.
+ *
+ * When caching is off (the OpenAI skeptic, or a prefix below PROMPT_CACHE_MIN_CHARS) the prefix
+ * stays a single plain `system` message with no providerOptions — byte-for-byte the pre-fix
+ * shape (head+tail concatenated), so the skeptic/OpenAI path and small prompts are untouched.
+ */
+function cacheableSystemMessages(
+  headText: string,
+  tailText: string | null,
+  cacheable: boolean,
+): ModelMessage[] {
+  if (!cacheable) {
+    return [{ role: "system", content: tailText === null ? headText : headText + tailText }];
+  }
+  const cc = { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } } };
+  const head: ModelMessage = { role: "system", content: headText, ...cc };
+  return tailText === null ? [head] : [head, { role: "system", content: tailText, ...cc }];
+}
+
+/**
  * Build the AI-SDK messages for one committee role, structured for Anthropic prompt-cache
  * hits (L3).
  *
@@ -256,18 +293,15 @@ export function buildCommitteeMessages(
 ): ModelMessage[] {
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
-  const systemPrefix = stableSystemHead(objective, question, evidenceBlock).join("\n");
+  // Round 0 has no transcript, so the stable head IS the whole shared prefix — a single cache
+  // block. It is byte-identical to the head the debate rounds emit, so debate round 1 reads this
+  // opening round's evidence + calibration from cache. See cacheableSystemMessages.
+  const headText = stableSystemHead(objective, question, evidenceBlock).join("\n");
 
   // Cache the shared prefix for the Claude roles once it's big enough to be worth it.
   // The skeptic (OpenAI) never carries anthropic providerOptions.
-  const cacheable = role !== "skeptic" && systemPrefix.length > PROMPT_CACHE_MIN_CHARS;
-  const system: ModelMessage = {
-    role: "system",
-    content: systemPrefix,
-    ...(cacheable
-      ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
-      : {}),
-  };
+  const cacheable = role !== "skeptic" && headText.length > PROMPT_CACHE_MIN_CHARS;
+  const system = cacheableSystemMessages(headText, null, cacheable);
 
   const priorClaimBlock = priorClaim
     ? [
@@ -298,21 +332,23 @@ export function buildCommitteeMessages(
   ].join("\n");
   const user: ModelMessage = { role: "user", content: userContent };
 
-  return [system, user];
+  return [...system, user];
 }
 
 /**
  * Build the AI-SDK messages for one role's CONVERSATIONAL turn (debate round ≥1), structured to
  * preserve the L3 prompt cache exactly as the opening round does.
  *
- * The `system` message is the shared prefix — the stable head (objective + question + evidence/digest
- * block + confidence calibration) followed by the rendered transcript of all PRIOR rounds — BYTE-
- * IDENTICAL across the three Claude roles. The transcript comes LAST (after calibration) and is
- * deterministic, role-independent, and append-only (see renderTranscript / stableSystemHead), so each
- * round's prefix extends the previous round's and Anthropic caches head + prior rounds across rounds,
- * not just across roles. The per-role material (the challenges aimed at this role, this role's own
- * prior turn, and the task) all lives in the `user` message. cacheControl is attached
- * only above PROMPT_CACHE_MIN_CHARS and never for the skeptic (OpenAI).
+ * The `system` prefix is the stable head (objective + question + evidence/digest block + confidence
+ * calibration) followed by the rendered transcript of all PRIOR rounds — BYTE-IDENTICAL across the
+ * three Claude roles. For the Claude roles it is emitted as TWO consecutive `system` messages so the
+ * head carries its OWN Anthropic cache breakpoint (served from cache across ALL rounds, including the
+ * opening committee round) in addition to the trailing breakpoint on the transcript (within-round
+ * reuse across roles). See cacheableSystemMessages for why the head breakpoint is the cross-round win.
+ * The transcript is deterministic, role-independent, and append-only (see renderTranscript /
+ * stableSystemHead). The per-role material (the challenges aimed at this role, this role's own prior
+ * turn, and the task) all lives in the `user` message. cacheControl is attached only above
+ * PROMPT_CACHE_MIN_CHARS and never for the skeptic (OpenAI).
  *
  * `transcript` is every round rendered so far; its LAST round supplies the challenges this role must
  * answer. `priorTurn` is this role's most recent claim, which it is revising.
@@ -329,23 +365,18 @@ export function buildDebateMessages(
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
   // Stable head first (objective + question + evidence + calibration), then the GROWING transcript
-  // LAST — so each round's system message append-only-extends the previous round's, and the head +
-  // prior rounds are served from Anthropic's cache instead of re-billed every round. See stableSystemHead.
-  const systemPrefix = [
-    ...stableSystemHead(objective, question, evidenceBlock),
-    "",
-    "DEBATE SO FAR (all prior rounds):",
-    renderTranscript(transcript),
-  ].join("\n");
+  // as a SEPARATE cache block. The head gets its OWN breakpoint (cacheableSystemMessages), so
+  // Anthropic serves it from cache on every round — and from the opening committee round — instead
+  // of re-billing the whole ~16k-char prefix every round behind a single trailing breakpoint (the
+  // read/write-ratio-stuck-at-2.0 bug). The trailing breakpoint on the transcript keeps within-round
+  // reuse across the three Claude roles. `tailText` reproduces the pre-fix bytes (head + tail is the
+  // exact old single-string prefix) so nothing but the breakpoint placement changes.
+  const headText = stableSystemHead(objective, question, evidenceBlock).join("\n");
+  const tailText = ["", "", "DEBATE SO FAR (all prior rounds):", renderTranscript(transcript)].join("\n");
 
-  const cacheable = role !== "skeptic" && systemPrefix.length > PROMPT_CACHE_MIN_CHARS;
-  const system: ModelMessage = {
-    role: "system",
-    content: systemPrefix,
-    ...(cacheable
-      ? { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" } } } }
-      : {}),
-  };
+  const cacheable =
+    role !== "skeptic" && headText.length + tailText.length > PROMPT_CACHE_MIN_CHARS;
+  const system = cacheableSystemMessages(headText, tailText, cacheable);
 
   // Challenges aimed at THIS role, in the latest round — directedChallenges is the single source of
   // truth and tags each with the peer that raised it (its `from`), so we render who challenged whom.
@@ -386,7 +417,7 @@ export function buildDebateMessages(
   ].join("\n");
   const user: ModelMessage = { role: "user", content: userContent };
 
-  return [system, user];
+  return [...system, user];
 }
 
 /** The four independent role Claims for one question, plus each call's token usage. */

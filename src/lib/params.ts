@@ -51,6 +51,14 @@ export const MAX_SEARCH_QUERIES_PER_QUESTION = 3;
 export const RESULTS_PER_QUESTION  = 6;
 export const SEARCH_CANDIDATES_PER_QUESTION = 10;
 
+// Relevance triage (orchestrated retrieve): one cheap gpt-4o-mini call scores every deduped search
+// candidate 0–10 for relevance BEFORE scraping, so off-topic hits (a bad query's marketing/biotech
+// junk) are dropped instead of scraped and fed to the committee. TRIAGE_ENABLED=false falls back to
+// the rank-based per-query cap (capCandidatesPerQuery). MIN_TRIAGE_SCORE is the keep bar; it sits
+// BELOW the UNSCORED default (5) so a triage failure degrades to pure rank-cap, never over-filters.
+export const TRIAGE_ENABLED        = true;
+export const MIN_TRIAGE_SCORE      = 4;
+
 // -- Orchestration: gate / budget --------------------------------------------
 
 export const MAX_LOOP_ITERATIONS   = 5;

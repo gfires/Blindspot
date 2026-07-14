@@ -31,7 +31,7 @@ import { ResearchBriefSchema, fallbackBrief, type ResearchBrief } from "../schem
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel, gateModel } from "../models/provider";
-import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens } from "./eval";
+import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, estimateCostUsd } from "./eval";
 import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, MAX_SEARCH_QUERIES_PER_QUESTION, RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
@@ -332,13 +332,22 @@ async function retrieve(
   // Under streamMode "custom", config.writer forwards live search/scrape progress
   // to the SSE transport (graph-stream.ts). Absent (graph.invoke) → no emission.
   const writer = config?.writer;
-  const { evidence, searchCredits, scrapeCredits } = await search(
+  const { evidence, searchCredits, scrapeCredits, triageUsage } = await search(
     queries,
     RESULTS_PER_QUESTION,
     state.loopIteration,
     writer ? (progress) => writer({ node: "retrieve", progress }) : undefined,
+    // Relevance context for triage: the subject grounds "is this candidate on-topic?".
+    state.researchBrief.subject,
   );
   const totalCredits = searchCredits + scrapeCredits;
+  // The triage call is one gpt-4o-mini pass inside search(); book its cost and thread its usage
+  // into the token rollup (it runs outside the LLM-node path, so nothing else records it).
+  const llmCalls: AnnotatedUsage[] = [];
+  if (triageUsage) {
+    getActiveCostTracker()?.record({ model: triageUsage.model, promptTokens: triageUsage.promptTokens, completionTokens: triageUsage.completionTokens });
+    llmCalls.push({ ...triageUsage, label: "triage", costUsd: estimateCostUsd(triageUsage) });
+  }
   // budgetRemaining/budgetSpent reducers are ADDITIVE — return signed deltas, not
   // absolutes. Spending `totalCredits` credits: remaining goes down, spent goes up.
   return {
@@ -349,6 +358,7 @@ async function retrieve(
     budgetRemaining: -totalCredits,
     budgetSpent: totalCredits,
     newEvidenceCount: evidence.length,
+    ...(llmCalls.length ? { llmCalls } : {}),
   };
 }
 

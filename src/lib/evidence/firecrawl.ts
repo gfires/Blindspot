@@ -19,15 +19,15 @@
  * module stays deterministic under test.
  */
 import FirecrawlApp from "@mendable/firecrawl-js";
-import type { ScanEvent } from "../events";
+import type { ScanEvent, TokenUsage } from "../events";
 import type { Source } from "../schema";
 import type { Intent } from "../intents";
 import { domainOf, truncate } from "../format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "../blocklist";
 import { getCache, setCache } from "../scrape-cache";
 import { getSearchCache, setSearchCache } from "../search-cache";
-import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR, SEARCH_CANDIDATES_PER_QUESTION, FIRECRAWL_CONCURRENCY } from "../params";
-import { makeIntents, scoreCandidates, selectSources, triageModel, type Candidate } from "../triage";
+import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR, SEARCH_CANDIDATES_PER_QUESTION, FIRECRAWL_CONCURRENCY, TRIAGE_ENABLED, MIN_TRIAGE_SCORE } from "../params";
+import { makeIntents, scoreCandidates, selectSources, triageModel, UNSCORED, type Candidate, type TriageScore } from "../triage";
 import { type Evidence, contentHash } from "./store";
 import { getActiveTrace } from "../orchestration/trace";
 import { createLimiter } from "../orchestration/limiter";
@@ -156,6 +156,49 @@ export function capCandidatesPerQuery(candidates: Candidate[], perQuery: number)
     if (n >= perQuery) continue;
     seen.set(q, n + 1);
     out.push(c);
+  }
+  return out;
+}
+
+/**
+ * Choose which scored candidates to scrape: per source query, the top `perQuery` by triage score,
+ * DROPPING any below `minScore` (so a query that surfaced only off-topic junk scrapes fewer — or none
+ * — rather than filling its quota with low-relevance pages the committee would read as "no evidence").
+ * Grouped by first intent, like capCandidatesPerQuery; ties break by original (rank) order. When triage
+ * is unavailable every candidate is UNSCORED (score 5), so with minScore below that this degrades to
+ * the pure rank-based top-k. Pure/deterministic; exported for testing.
+ */
+export function selectCandidatesByScore(
+  candidates: Candidate[],
+  scores: Map<string, TriageScore>,
+  perQuery: number,
+  minScore: number,
+): Candidate[] {
+  const scoreOf = (c: Candidate) => scores.get(c.url)?.score ?? UNSCORED.score;
+  const byQuery = new Map<string, Candidate[]>();
+  for (const c of candidates) {
+    const q = c.intents[0] ?? "";
+    const arr = byQuery.get(q);
+    if (arr) arr.push(c);
+    else byQuery.set(q, [c]);
+  }
+  const out: Candidate[] = [];
+  const chosen = new Set<string>();
+  for (const list of byQuery.values()) {
+    // Stable sort by score desc — preserve encounter (rank) order within equal scores.
+    const ranked = list
+      .map((c, i) => ({ c, i }))
+      .sort((a, b) => scoreOf(b.c) - scoreOf(a.c) || a.i - b.i)
+      .map((x) => x.c);
+    let taken = 0;
+    for (const c of ranked) {
+      if (taken >= perQuery) break;
+      if (scoreOf(c) < minScore) break; // sorted desc → everything after is also below the bar
+      if (chosen.has(c.url)) continue;
+      chosen.add(c.url);
+      out.push(c);
+      taken += 1;
+    }
   }
   return out;
 }
@@ -402,6 +445,8 @@ export interface SearchResult {
   evidence: Evidence[];
   searchCredits: number;
   scrapeCredits: number;
+  /** The relevance-triage LLM call's usage, when triage ran (the caller books its cost). */
+  triageUsage?: TokenUsage;
 }
 
 /**
@@ -418,6 +463,7 @@ export async function search(
   k: number,
   loopIteration: number,
   onProgress?: (p: SearchProgress) => void,
+  context = "",
 ): Promise<SearchResult> {
   const app = makeFirecrawl();
   const now: Clock = () => Date.now();
@@ -470,10 +516,21 @@ export async function search(
     }
   }
 
-  // Cap per source query BEFORE scraping (was: scrape all, then keep top-k) so we only pay to
-  // scrape pages we'll actually use. `k` is RESULTS_PER_QUESTION, the same bound the post-scrape
-  // evidence cap enforces below.
-  const candidates = capCandidatesPerQuery(dedupeCandidates(hits), k);
+  // Select which candidates to scrape BEFORE scraping (was: scrape all, then keep top-k), so we only
+  // pay to scrape pages we'll use. With triage on, one cheap gpt-4o-mini call scores every deduped
+  // candidate for relevance to `context` and we keep the top-k per query above MIN_TRIAGE_SCORE
+  // (dropping off-topic junk a bad query surfaced); off, we fall back to the rank-based per-query cap.
+  const deduped = dedupeCandidates(hits);
+  let candidates: Candidate[];
+  let triageUsage: TokenUsage | undefined;
+  if (TRIAGE_ENABLED && deduped.length > 0) {
+    const { scores, usage } = await scoreCandidates(context, deduped);
+    triageUsage = usage;
+    candidates = selectCandidatesByScore(deduped, scores, k, MIN_TRIAGE_SCORE);
+    getActiveTrace()?.log("triage", { context, scored: deduped.length, selected: candidates.length });
+  } else {
+    candidates = capCandidatesPerQuery(deduped, k);
+  }
   const blockset = await loadBlocklist();
 
   const ranked: RankedSource[] = candidates.map((c, i) => ({
@@ -528,5 +585,5 @@ export async function search(
       };
     });
 
-  return { evidence, searchCredits, scrapeCredits };
+  return { evidence, searchCredits, scrapeCredits, triageUsage };
 }

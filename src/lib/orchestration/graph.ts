@@ -452,30 +452,31 @@ const RefineSchema = z.object({
   })),
 });
 
-async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
+export async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
   const costTracker = getActiveCostTracker();
   costTracker?.check();
 
   const open = unresolved(state);
   if (open.length === 0) return {};
 
-  const latestLoop = state.loopIteration;
   const sections = open.map((q) => {
-    const claims = state.claims.filter(
-      (c) => c.questionId === q.id && c.loopIteration === latestLoop,
-    );
+    // The latest debated positions for this question: the final debate round when present, else the
+    // question's claims. Do NOT filter by state.loopIteration — the gate increments loopIteration
+    // BEFORE refine runs, while these claims carry the PRE-increment loop, so a `=== loopIteration`
+    // filter matched nothing and refine silently produced no queries (a no-op second pass).
+    const rounds = state.debateTranscripts[q.id];
+    const finalRound = rounds?.[rounds.length - 1];
+    const latestClaims = finalRound?.claims ?? state.claims.filter((c) => c.questionId === q.id);
     // Draw gaps from the CONTESTED claims — the roles standing on either side of an evidential
     // contention (a named gap that could settle their disagreement). Focusing the second retrieval
     // pass there aims it at the actual fault line rather than every role's wishlist. Fall back to all
     // gaps when no specific evidential contention was found (e.g. no transcript this loop).
-    const rounds = state.debateTranscripts[q.id];
-    const finalRound = rounds?.[rounds.length - 1];
     const contested = new Set(
       (finalRound ? extractContentions(q.id, finalRound.claims) : [])
         .filter((c) => c.type === "evidential")
         .flatMap((c) => c.roles),
     );
-    const gapClaims = contested.size ? claims.filter((c) => contested.has(c.agentRole)) : claims;
+    const gapClaims = contested.size ? latestClaims.filter((c) => contested.has(c.agentRole)) : latestClaims;
     const gaps = gapClaims.flatMap((c) => c.missingEvidence).filter(Boolean);
     const gapText = gaps.length > 0 ? gaps.join("; ") : "";
     return { id: q.id, text: q.text, gaps, gapText };

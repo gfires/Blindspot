@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Mock } from "vitest";
 import { generateText } from "ai";
-import { answerObjective, recommend, synthesizeReport } from "@/lib/orchestration/graph";
+import { answerObjective, ensureAnswer, recommend, synthesizeReport } from "@/lib/orchestration/graph";
 import type { ResearchBrief } from "@/lib/schemas/brief";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
 import type { AgentRoleT, Claim, DebateResponse } from "@/lib/schemas/claim";
@@ -89,8 +89,6 @@ describe("answerObjective (A5)", () => {
   });
 
   it("skips the call and returns an empty answer when the objective is empty", async () => {
-    // Clear first so the assertion measures ONLY this call (the shared mock's history is cumulative).
-    (generateText as Mock).mockClear();
     const out = await answerObjective(
       stateOf({ researchBrief: { subject: "", objective: "", constraints: [] } }),
     );
@@ -125,11 +123,28 @@ describe("recommend node (A5)", () => {
   });
 });
 
+describe("ensureAnswer — the run always gets an answer (A5)", () => {
+  it("generates the answer when the report has none (degraded before recommend), returning its usage", async () => {
+    (generateText as Mock).mockResolvedValue(fakeGenResult({ answer: "produced on the degrade path" }));
+    const state = stateOf({ answer: "" });
+    const { report, usage } = await ensureAnswer(state, synthesizeReport(state));
+    expect(report.answer).toBe("produced on the degrade path");
+    // Usage is returned (not on state.llmCalls) so the runner can fold it into the token rollup.
+    expect(usage).toHaveLength(1);
+    expect(usage[0].label).toBe("synthesis:answer");
+  });
+
+  it("no-ops (no LLM call, no usage) when recommend already wrote the answer", async () => {
+    const state = stateOf({ answer: "already adjudicated" });
+    const { report, usage } = await ensureAnswer(state, synthesizeReport(state));
+    expect(report.answer).toBe("already adjudicated");
+    expect(usage).toEqual([]);
+    assertNoLlmCalls();
+  });
+});
+
 describe("synthesizeReport stays pure (A5)", () => {
   it("attaches objective + answer from state without any LLM call", () => {
-    // Clear here so the assertion measures ONLY synthesizeReport's own calls (the shared mock's
-    // history is cumulative across the file's earlier recommend/answerObjective tests).
-    (generateText as Mock).mockClear();
     const report = synthesizeReport(stateOf({ answer: "the final answer" }));
     expect(report.objective).toBe("Decide go/no-go on a venture-scale freight brokerage bet");
     expect(report.answer).toBe("the final answer");

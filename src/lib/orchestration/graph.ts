@@ -188,7 +188,6 @@ export async function intake(state: ResearchStateT): Promise<Partial<ResearchSta
       objective: object.objective,
       constraints: object.constraints.slice(0, MAX_BRIEF_CONSTRAINTS),
     };
-    getActiveTrace()?.log("intake", { researchBrief });
 
     return { researchBrief, llmCalls: [annotated] };
   } catch (err) {
@@ -629,7 +628,9 @@ const AnswerSchema = z.object({
  * the fault lines) and calls out any surviving committee split as evidential vs interpretive.
  *
  * Degrades to an empty answer on any generation error — the pure structural report always survives.
- * The budget gate is OUTSIDE the try (a hit cap must halt the run). Exported for direct unit testing.
+ * The answer is EXEMPT from the run's cost cap: we always want a final adjudication, even on a run
+ * that otherwise blew its budget, so this books cost via record() but never gates on check().
+ * Exported for direct unit testing.
  */
 export async function answerObjective(
   state: ResearchStateT,
@@ -639,7 +640,6 @@ export async function answerObjective(
   if (!objective) return { answer: "" };
 
   const costTracker = getActiveCostTracker();
-  costTracker?.check();
 
   // Grounding, per question: the committee's FINAL-round positions and any surviving contention.
   // Pulled from the debate transcript when present (the durable final round), else the raw claims.
@@ -697,6 +697,24 @@ export async function answerObjective(
     });
     return { answer: "" };
   }
+}
+
+/**
+ * Guarantee the report carries an objective-level answer. The recommend node writes it on a normal
+ * run, but a run that degrades (budget cap / recursion limit) halts BEFORE recommend — so if the
+ * answer is still empty and there is an objective to adjudicate, produce it here. Because the answer
+ * is exempt from the cost cap (see answerObjective), "we blew the budget" still yields an adjudication
+ * rather than a blank. Returns the report plus the answer call's usage (empty when it no-ops) so the
+ * caller can fold it into its token rollup — the call happens OUTSIDE the graph, so it never reaches
+ * state.llmCalls on its own. A no-op when the answer is already present or there is no objective.
+ */
+export async function ensureAnswer(
+  state: ResearchStateT,
+  report: ResearchReport,
+): Promise<{ report: ResearchReport; usage: AnnotatedUsage[] }> {
+  if (report.answer || !state.researchBrief.objective.trim()) return { report, usage: [] };
+  const { answer, usage } = await answerObjective(state);
+  return { report: { ...report, answer }, usage: usage ? [usage] : [] };
 }
 
 /**
@@ -804,7 +822,9 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       }
     }
 
-    const report = synthesizeReport(finalState);
+    // Always produce an objective-level answer, even when the run degraded before recommend ran
+    // (the answer is exempt from the cost cap). No-op with zero usage when recommend already wrote it.
+    const { report, usage: answerUsage } = await ensureAnswer(finalState, synthesizeReport(finalState));
     if (degraded) {
       console.log(`[degrade] run halted early — synthesizing partial report`);
     }
@@ -840,7 +860,7 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       claimsCount: finalState.claims.length,
       loopIterations: finalState.loopIteration,
       converged: finalState.converged,
-      answerProduced: finalState.answer.length > 0,
+      answerProduced: report.answer.length > 0,
       budgetSpent: finalState.budgetSpent,
       budgetRemaining: finalState.budgetRemaining,
       firecrawlCalls: finalState.firecrawlCalls,
@@ -857,7 +877,8 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       arm: "orchestrated" as const,
       topic,
       report,
-      tokens: rollupTokens(finalState.llmCalls),
+      // Fold in the degrade-path answer's usage — it runs outside the graph, so it's not in llmCalls.
+      tokens: rollupTokens([...finalState.llmCalls, ...answerUsage]),
       firecrawlCalls: finalState.firecrawlCalls,
       firecrawlCredits: finalState.firecrawlCredits,
       durationMs: Date.now() - t0,

@@ -2,6 +2,7 @@ import { GraphRecursionError } from "@langchain/langgraph";
 import {
   compileResearchGraph,
   synthesizeReport,
+  ensureAnswer,
   computeRecursionLimit,
   scopeEvidenceToQuestions,
   questionsNeedingDebate,
@@ -317,7 +318,14 @@ async function runGraphStreamingInner(
   const fullState = await graph.getState({ configurable: { thread_id: threadId } });
   const finalState = fullState.values as ResearchStateT;
 
-  const report = synthesizeReport(finalState);
+  // Always produce an objective-level answer, even when the run degraded before recommend ran (the
+  // answer is exempt from the cost cap). No-op when recommend already wrote it; otherwise fold the
+  // out-of-graph answer call's usage into the streamed rollup.
+  const { report, usage: answerUsage } = await ensureAnswer(finalState, synthesizeReport(finalState));
+  for (const u of answerUsage) {
+    allLlmCalls.push(u);
+    send({ type: "research:usage", usage: u });
+  }
   if (degraded) {
     send({ type: "research:error", message: degradeMessage });
   }
@@ -332,7 +340,7 @@ async function runGraphStreamingInner(
     budgetSpent: finalState.budgetSpent,
     budgetRemaining: finalState.budgetRemaining,
     converged: finalState.converged,
-    answerProduced: finalState.answer.length > 0,
+    answerProduced: report.answer.length > 0,
     llmCallCount: allLlmCalls.length,
     firecrawlCalls: totalFirecrawlCalls,
     firecrawlCredits: totalFirecrawlCredits,

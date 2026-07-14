@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildDebateMessages } from "@/lib/orchestration/committee";
+import { buildDebateMessages, buildCommitteeMessages } from "@/lib/orchestration/committee";
 import { PROMPT_CACHE_MIN_CHARS } from "@/lib/params";
 import type { DebateRound } from "@/lib/orchestration/debate";
 import type { Question } from "@/lib/schemas/state";
@@ -137,5 +137,37 @@ describe("buildDebateMessages", () => {
     // The skeptic can now attack the actual bet — but its persona incentive is unchanged.
     expect(user.content).toContain("Your incentive is DISCONFIRMATION.");
     expect(user.content).not.toContain("RESEARCH OBJECTIVE");
+  });
+});
+
+// These verify the STRUCTURAL preconditions for Anthropic cross-round prompt caching: each round's
+// shared system prefix must be a byte-prefix of the next round's. (Actual cache HITS need live calls;
+// what we can assert offline is the append-only prefix chain that makes them possible.)
+describe("buildDebateMessages — cross-round cache structure", () => {
+  const OBJ = "Adjudicate the freight brokerage bet";
+  const r0: DebateRound = transcript[0];
+  const r1: DebateRound = transcript[1];
+  const sysOf = (...a: Parameters<typeof buildDebateMessages>) =>
+    buildDebateMessages(...a)[0].content as string;
+
+  it("places the confidence calibration BEFORE the transcript (keeps the head stable as it grows)", () => {
+    const sys = sysOf("historian", q("q1"), BIG_BLOCK, transcript, undefined, 0, OBJ);
+    expect(sys.indexOf("CONFIDENCE CALIBRATION")).toBeGreaterThanOrEqual(0);
+    expect(sys.indexOf("CONFIDENCE CALIBRATION")).toBeLessThan(sys.indexOf("DEBATE SO FAR"));
+  });
+
+  it("is append-only across rounds: round N's system prefix is a byte-prefix of round N+1's", () => {
+    const sys1 = sysOf("historian", q("q1"), BIG_BLOCK, [r0], undefined, 0, OBJ);         // rounds 0
+    const sys2 = sysOf("historian", q("q1"), BIG_BLOCK, [r0, r1], undefined, 0, OBJ);      // rounds 0..1
+    expect(sys2.startsWith(sys1)).toBe(true);
+    expect(sys2.length).toBeGreaterThan(sys1.length); // the newest round is the only delta
+  });
+
+  it("chains from the opening round: the committee (round 0) prefix is a byte-prefix of round 1's", () => {
+    // Same objective/question/evidence → the committee's stable head is reused by the first debate
+    // round, so Anthropic can serve the opening round's evidence + calibration from cache too.
+    const committeeSys = buildCommitteeMessages("historian", q("q1"), BIG_BLOCK, 0, undefined, OBJ)[0].content as string;
+    const debateSys = sysOf("historian", q("q1"), BIG_BLOCK, [r0], undefined, 0, OBJ);
+    expect(debateSys.startsWith(committeeSys)).toBe(true);
   });
 });

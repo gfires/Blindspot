@@ -201,6 +201,31 @@ function objectivePrefix(objective: string): string[] {
 }
 
 /**
+ * The STABLE head of the committee's shared system prefix: objective + question + evidence block +
+ * confidence calibration. For a fixed evidence snapshot (evidence is FROZEN during a debate) this is
+ * byte-identical across the opening round (buildCommitteeMessages) and every conversational round
+ * (buildDebateMessages), and identical across the three Claude roles.
+ *
+ * Calibration is the LAST thing in the head — deliberately BEFORE the transcript — so that the head,
+ * and then each successive round's transcript, form an APPEND-ONLY prefix: round r's full system
+ * message is a byte-prefix of round r+1's. That lets Anthropic's incremental prompt cache serve the
+ * head + all prior rounds from cache and bill only the newest round's delta, across rounds, not just
+ * across roles within a round. (Before this, calibration trailed the growing transcript, so the
+ * cacheable prefix collapsed to the head and every round re-billed the whole transcript.)
+ */
+function stableSystemHead(objective: string, question: Question, evidenceBlock: string): string[] {
+  return [
+    ...objectivePrefix(objective),
+    `QUESTION (${question.category}): ${question.text}`,
+    "",
+    "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
+    evidenceBlock,
+    "",
+    CONFIDENCE_CALIBRATION,
+  ];
+}
+
+/**
  * Build the AI-SDK messages for one committee role, structured for Anthropic prompt-cache
  * hits (L3).
  *
@@ -231,15 +256,7 @@ export function buildCommitteeMessages(
 ): ModelMessage[] {
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
-  const systemPrefix = [
-    ...objectivePrefix(objective),
-    `QUESTION (${question.category}): ${question.text}`,
-    "",
-    "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
-    evidenceBlock,
-    "",
-    CONFIDENCE_CALIBRATION,
-  ].join("\n");
+  const systemPrefix = stableSystemHead(objective, question, evidenceBlock).join("\n");
 
   // Cache the shared prefix for the Claude roles once it's big enough to be worth it.
   // The skeptic (OpenAI) never carries anthropic providerOptions.
@@ -288,11 +305,13 @@ export function buildCommitteeMessages(
  * Build the AI-SDK messages for one role's CONVERSATIONAL turn (debate round ≥1), structured to
  * preserve the L3 prompt cache exactly as the opening round does.
  *
- * The `system` message is the shared prefix — question + evidence/digest block + the rendered
- * transcript of all PRIOR rounds + the confidence calibration — BYTE-IDENTICAL across the three
- * Claude roles. The transcript is deterministic and role-independent (see renderTranscript), so it
- * doesn't break the shared prefix; the per-role material (the challenges aimed at this role, this
- * role's own prior turn, and the task) all lives in the `user` message. cacheControl is attached
+ * The `system` message is the shared prefix — the stable head (objective + question + evidence/digest
+ * block + confidence calibration) followed by the rendered transcript of all PRIOR rounds — BYTE-
+ * IDENTICAL across the three Claude roles. The transcript comes LAST (after calibration) and is
+ * deterministic, role-independent, and append-only (see renderTranscript / stableSystemHead), so each
+ * round's prefix extends the previous round's and Anthropic caches head + prior rounds across rounds,
+ * not just across roles. The per-role material (the challenges aimed at this role, this role's own
+ * prior turn, and the task) all lives in the `user` message. cacheControl is attached
  * only above PROMPT_CACHE_MIN_CHARS and never for the skeptic (OpenAI).
  *
  * `transcript` is every round rendered so far; its LAST round supplies the challenges this role must
@@ -309,17 +328,14 @@ export function buildDebateMessages(
 ): ModelMessage[] {
   void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
 
+  // Stable head first (objective + question + evidence + calibration), then the GROWING transcript
+  // LAST — so each round's system message append-only-extends the previous round's, and the head +
+  // prior rounds are served from Anthropic's cache instead of re-billed every round. See stableSystemHead.
   const systemPrefix = [
-    ...objectivePrefix(objective),
-    `QUESTION (${question.category}): ${question.text}`,
-    "",
-    "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
-    evidenceBlock,
+    ...stableSystemHead(objective, question, evidenceBlock),
     "",
     "DEBATE SO FAR (all prior rounds):",
     renderTranscript(transcript),
-    "",
-    CONFIDENCE_CALIBRATION,
   ].join("\n");
 
   const cacheable = role !== "skeptic" && systemPrefix.length > PROMPT_CACHE_MIN_CHARS;

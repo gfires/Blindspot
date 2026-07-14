@@ -75,10 +75,14 @@ async function main() {
       `${result.firecrawlCalls} firecrawl calls / ${result.firecrawlCredits} credits`,
   );
 
+  // Cap the slug so a long free-form topic (an intake thesis can be a full paragraph) can't
+  // blow past the filesystem's per-name limit (ENAMETOOLONG). The timestamp keeps it unique.
   const slug = topic
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-|-$/g, "");
+    .replace(/^-|-$/g, "")
+    .slice(0, 60)
+    .replace(/-$/, "");
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const outDir = join(process.cwd(), "compare-output");
   mkdirSync(outDir, { recursive: true });

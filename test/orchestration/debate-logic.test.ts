@@ -105,12 +105,16 @@ describe("debateMovement", () => {
     expect(m.converged).toBe(false);
   });
 
-  it("non-converged on a fresh rebuttal pair, counting by pair identity", () => {
-    const prev = round(1, [claim("investor", { responses: [] })]);
-    const next = round(2, [claim("investor", { responses: [resp("skeptic", "rebut", "different words")] })]);
+  it("counts a fresh rebuttal pair by pair identity, but a rebuttal WITHOUT movement still converges", () => {
+    // A fresh rebuttal edge is reported in newRebuttals, but on its own (no confidence/id-set move)
+    // it no longer keeps the debate alive: roles restating disagreement over frozen evidence is the
+    // churn we exit on. Convergence keys on `moved`, not `newRebuttals`.
+    const prev = round(1, [claim("investor", { confidence: 0.6, responses: [] })]);
+    const next = round(2, [claim("investor", { confidence: 0.6, responses: [resp("skeptic", "rebut", "different words")] })]);
     const m = debateMovement(prev, next, DEBATE_CONFIDENCE_EPSILON);
     expect(m.newRebuttals).toBe(1);
-    expect(m.converged).toBe(false);
+    expect(m.moved).toBe(0);
+    expect(m.converged).toBe(true);
   });
 
   it("does not count a rebuttal pair that already existed (ignores changed point text)", () => {

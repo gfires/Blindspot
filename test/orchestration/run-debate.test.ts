@@ -118,6 +118,30 @@ describe("runDebate", () => {
     expect(result.claims.every((c) => c.debateRound === 1)).toBe(true);
   });
 
+  it("stops after one rebuttal round when roles keep rebutting but no position moves", async () => {
+    // The churn case: round 0 = wide spread (debates). Every conversational turn RESTATES the
+    // role's opening (flat confidence + ids) but the investor keeps firing a fresh rebuttal at the
+    // skeptic. Old convergence (moved===0 && newRebuttals===0) let that rebuttal drag the debate to
+    // the cap; now a round that moves NO position converges, so the debate exits after round 1 and
+    // hands the surviving (evidential) gap to the gate instead of re-arguing frozen evidence.
+    gen.mockImplementation(async (args: { messages: { role: string; content: string }[] }) => {
+      const role = roleOf(args.messages);
+      if (!isDebateTurn(args.messages)) return fakeGenResult(openingOutput(role));
+      return fakeGenResult({
+        ...openingOutput(role), // flat: same confidence + ids as the opening → moved === 0
+        responses:
+          role === "investor"
+            ? [{ targetRole: "skeptic", stance: "rebut", point: "still unconvinced" }]
+            : [],
+      });
+    });
+
+    const result = await runDebate(q(), [ev("e1")]);
+    // 4 opening + 4 round-1 turns, then convergence stops it — NOT dragged to the cap by rebuttals.
+    expect(gen).toHaveBeenCalledTimes(8);
+    expect(result.rounds.map((r) => r.round)).toEqual([0, 1]);
+  });
+
   it("caps at MAX_DEBATE_ROUNDS when positions keep moving", async () => {
     // Confidence shifts by 0.1 (> epsilon) every conversational round → never converges.
     gen.mockImplementation(async (args: { messages: { role: string; content: string }[] }) => {

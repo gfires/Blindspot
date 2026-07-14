@@ -87,8 +87,17 @@ function rebuttalPairs(round: DebateRound): Set<string> {
  * self-report "I've converged"). `moved` counts roles whose confidence shifted by more than `epsilon`
  * OR whose supporting/contradicting id-set changed between the rounds. `newRebuttals` counts rebut
  * edges present in `next` but absent from `prev`, compared by (from→target) PAIR IDENTITY only — never
- * by fuzzy-matching the free-text `point`. A round that neither moves a position nor opens a fresh
- * rebuttal has `converged: true`, and the debate stops.
+ * by fuzzy-matching the free-text `point`.
+ *
+ * A round that moves NO position has `converged: true` and the debate stops — even if roles kept
+ * firing fresh rebuttals. Because a role may concede ONLY to evidence (never to consensus) over a
+ * FROZEN evidence snapshot, a round where nobody moved means the evidence in hand can't shift anyone:
+ * either the committee has settled or it is stuck on a gap. Both are terminal for THIS snapshot — the
+ * gate then routes the survivor (interpretive split → report the fault line; evidential gap → earn
+ * more retrieval), which is far cheaper than another rebuttal round of roles restating disagreement.
+ * (Traces show round-over-round movement dries up fast once evidence is exhausted; `newRebuttals`
+ * without movement was the main source of churn — it is still reported for the trace, just no longer
+ * keeps the debate alive.)
  */
 export function debateMovement(
   prev: DebateRound,
@@ -116,7 +125,9 @@ export function debateMovement(
     if (!prevPairs.has(pair)) newRebuttals += 1;
   }
 
-  return { moved, newRebuttals, converged: moved === 0 && newRebuttals === 0 };
+  // Stop the moment a round moves no position — a stall over frozen evidence, whether settled or
+  // gap-blocked. `newRebuttals` is reported but no longer gates convergence (it was the churn source).
+  return { moved, newRebuttals, converged: moved === 0 };
 }
 
 /**

@@ -88,6 +88,10 @@ describe("answerObjective (A5)", () => {
     // Grounded + traceable: the prompt requires citing [S#] and forbids inventing sources.
     expect(prompt).toContain("CITE specific evidence by");
     expect(prompt).toContain("NEVER cite an [S#] that is not listed");
+    // Authoritative voice (A): lead with a verdict and reason from best-available evidence, not hedge.
+    expect(prompt).toContain("WRITE WITH THE AUTHORITY");
+    expect(prompt).toContain("BEST AVAILABLE evidence");
+    expect(prompt).toContain("DECISIVE read beats");
   });
 
   it("threads the CITED evidence into the prompt as [S#] sources and tags each claim with its sources", async () => {

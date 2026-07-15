@@ -81,6 +81,16 @@ export function scopeEvidenceToQuestions(
   }
   const byQuestion = new Map<string, Evidence[]>();
   for (const e of evidence) {
+    // Identity scoping: if the evidence carries a questionId, one question owns it
+    // outright — bucket it directly and skip the sourceQuery match. This is what lets a
+    // researcher agent's self-invented queries reach the committee (P1 fix).
+    if (e.questionId !== undefined) {
+      const bucket = byQuestion.get(e.questionId) ?? [];
+      bucket.push(e);
+      byQuestion.set(e.questionId, bucket);
+      continue;
+    }
+    // Fallback (unchanged): scope by sourceQuery → searchQueries, allowing many-to-many.
     const owners = queryToQuestions.get(e.sourceQuery);
     if (!owners) continue;
     for (const qid of owners) {

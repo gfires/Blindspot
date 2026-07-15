@@ -10,5 +10,6 @@ export const EvidenceSchema = z.object({
   contentHash: z.string(),
   sourceQuery: z.string(),
   loopIteration: z.number().int(),
+  questionId: z.string().optional(),
 });
 export type Evidence = z.infer<typeof EvidenceSchema>;

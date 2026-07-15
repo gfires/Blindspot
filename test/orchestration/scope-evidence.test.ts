@@ -7,7 +7,12 @@ function q(id: string, overrides: Partial<Question> = {}): Question {
   return { id, text: `q ${id}`, category: "cat", confidence: 0, resolved: false, ...overrides };
 }
 
-function ev(sourceQuery: string, loopIteration = 0, id?: string): Evidence {
+function ev(
+  sourceQuery: string,
+  loopIteration = 0,
+  id?: string,
+  questionId?: string,
+): Evidence {
   return {
     id: id ?? `e-${sourceQuery}-${loopIteration}`,
     url: "https://example.com",
@@ -18,6 +23,7 @@ function ev(sourceQuery: string, loopIteration = 0, id?: string): Evidence {
     sourceQuery,
     loopIteration,
     contentHash: `h-${sourceQuery}-${loopIteration}`,
+    ...(questionId !== undefined ? { questionId } : {}),
   };
 }
 
@@ -77,6 +83,41 @@ describe("scopeEvidenceToQuestions", () => {
     const evidence = [ev("b")];
     const result = scopeEvidenceToQuestions(questions, evidence);
     expect(result.has("q1")).toBe(false);
+  });
+
+  it("questionId identity wins over sourceQuery match", () => {
+    const questions = [
+      q("q1", { searchQueries: ["shared"] }),
+      q("q2", { searchQueries: ["only-q2"] }),
+    ];
+    // sourceQuery "shared" matches q1, but questionId "q2" must win.
+    const tagged = ev("shared", 0, "e-tagged", "q2");
+    const result = scopeEvidenceToQuestions(questions, [tagged]);
+    expect(result.get("q2")!.map((e) => e.id)).toContain("e-tagged");
+    expect(result.get("q1") ?? []).toHaveLength(0);
+  });
+
+  it("no cross-contamination: same invented sourceQuery, different questionId", () => {
+    const questions = [q("q1"), q("q2")];
+    // Both share the SAME invented query string, in NEITHER question's searchQueries,
+    // but carry distinct questionIds — each lands only in its own bucket.
+    const e1 = ev("invented-query", 0, "e1", "q1");
+    const e2 = ev("invented-query", 0, "e2", "q2");
+    const result = scopeEvidenceToQuestions(questions, [e1, e2]);
+    expect(result.get("q1")!.map((e) => e.id)).toEqual(["e1"]);
+    expect(result.get("q2")!.map((e) => e.id)).toEqual(["e2"]);
+  });
+
+  it("mixed: questionId-tagged and untagged sourceQuery-scoped evidence coexist", () => {
+    const questions = [
+      q("q1", { searchQueries: ["a"] }),
+      q("q2", { searchQueries: ["b"] }),
+    ];
+    const tagged = ev("invented", 0, "e-tagged", "q2");
+    const untagged = ev("a", 0, "e-untagged");
+    const result = scopeEvidenceToQuestions(questions, [tagged, untagged]);
+    expect(result.get("q2")!.map((e) => e.id)).toEqual(["e-tagged"]);
+    expect(result.get("q1")!.map((e) => e.id)).toEqual(["e-untagged"]);
   });
 });
 

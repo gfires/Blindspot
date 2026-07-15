@@ -2,7 +2,7 @@ import { generateText, Output } from "ai";
 import { z } from "zod";
 import { gateClassifierModel } from "../models/provider";
 import type { ResearchStateT } from "../schemas/state";
-import { MAX_LOOP_ITERATIONS, LLM_MAX_RETRIES, LOOP_CONFIDENCE_EPSILON } from "../params";
+import { MAX_LOOP_ITERATIONS, LLM_MAX_RETRIES, LOOP_CONFIDENCE_EPSILON, MIN_LOOP_COST_HEADROOM_USD } from "../params";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import type { GateScore } from "../research-events";
 import { getActiveTrace } from "./trace";
@@ -25,17 +25,26 @@ const GateDecisionSchema = z.object({
  * we pay for a gate classification call. Checked first in allocateBudget.
  *
  * - "budget": no Firecrawl budget left to retrieve with.
+ * - "cost-headroom": too little LLM-cost headroom left under MAX_RUN_COST_USD to safely START
+ *   another retrieve+debate cycle. Beginning one anyway risks hitting the cap MID-debate, which
+ *   LangGraph rolls back — orphaning the just-gathered evidence and committing zero claims. Stop
+ *   cleanly before the cycle and keep the last COMPLETE loop's claims. Fires only when a cost
+ *   tracker is active; "no tracker" is treated as infinite headroom (keeps the pure tests inert).
  * - "max-loops": the loop-iteration cap is reached.
  * - "no-progress": a past-loop-0 iteration whose retrieve added no new evidence — running
  *   the committee and gate again would only reproduce the prior round. Loop 0 is exempt
  *   (newEvidenceCount is only meaningful once a retrieve has actually run).
  *
- * Order matters only for the returned reason string; all three are terminal.
+ * Order matters only for the returned reason string; all are terminal.
  */
 export function gateShortCircuit(
   state: ResearchStateT,
-): "budget" | "max-loops" | "no-progress" | null {
+): "budget" | "cost-headroom" | "max-loops" | "no-progress" | null {
   if (state.budgetRemaining <= 0) return "budget";
+  // Affordability guard: converge rather than start a cycle the LLM budget can't finish. When no
+  // tracker is active, remaining is undefined → treated as infinite headroom → guard stays inert.
+  const remaining = getActiveCostTracker()?.getRemaining();
+  if (remaining !== undefined && remaining < MIN_LOOP_COST_HEADROOM_USD) return "cost-headroom";
   if (state.loopIteration >= MAX_LOOP_ITERATIONS) return "max-loops";
   if (state.loopIteration > 0 && state.newEvidenceCount === 0) return "no-progress";
   return null;

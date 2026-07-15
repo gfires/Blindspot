@@ -95,6 +95,16 @@ export const TOTAL_FIRECRAWL_BUDGET = 80;
 // slightly above this: ~this much deliberation + the exempt answer on top.
 export const MAX_RUN_COST_USD      = 0.75;
 
+// LLM-cost headroom required to justify STARTING another retrieve+debate cycle. A cycle that
+// begins with less than this remaining under MAX_RUN_COST_USD risks blowing the cap MID-flight —
+// and because LangGraph rolls a super-step back when a call throws mid-step, a mid-debate cap hit
+// produces ZERO committed claims and ORPHANS the evidence that pass just gathered. So the gate
+// converges cleanly BEFORE such a cycle, keeping the last COMPLETE loop's claims for the answer.
+// Sized to cover roughly one bounded deliberation cycle: post the per-pass evidence ceiling, a
+// retrieve+redebate cycle runs ~$0.15–0.25. Tunable; keep it a small fraction of MAX_RUN_COST_USD
+// (here 1/3) so early loops aren't starved while a late, unaffordable loop is still stopped short.
+export const MIN_LOOP_COST_HEADROOM_USD = 0.25;
+
 // Output-token ceiling for the synthesis ANSWER call (the final deliverable). Left unset, the AI SDK
 // sends the model's 128k default max_tokens; a non-streaming request at that ceiling is the classic
 // truncation trap, and on a complex committee input Sonnet 5's adaptive thinking (which cannot be

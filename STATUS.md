@@ -75,6 +75,30 @@ Post-Wave-3 pass: the debate/refine loop was live-verified, then tuned end-to-en
 
 ## Next: agentic retrieval (branch `workflow-to-agentic-migration`)
 
+**Built (P1–P5) + tuned live (2026-07-15).** All five phases landed (`tsc` clean, 313 vitest green).
+Two live `run-arm agentic` runs on "freight brokerage vendor management" drove the tuning below; the
+full agentic-vs-orchestrated `compare` is still the human's cost/quality check.
+
+- **Search treadmill fixed** (`MAX_SEARCHES_PER_PASS=1`): a run burned 30 searches / 60 credits and read
+  only 4 pages (whole questions starved), because the agent treated search count as a free variable and
+  ran a query-refinement loop. Capped to 1 search/pass (the coded arm's 1-query-per-question discipline);
+  the one search's ~10 snippets ARE the triage, then the agent must READ. Prompts realigned off "cast
+  wide / search again".
+- **Evidence ceiling** (reuse `resultsPerQuestionForLoop`): the reader had a floor (`RECON_FLOOR`) but no
+  ceiling, so it stored ~2× the coded arm's evidence → deliberation cost (the real USD driver — it scales
+  with evidence volume into the committee, ~independent of Firecrawl credits) doubled and blew the $0.75
+  cap on loop 0 alone. Pinned reads/pass to the coded arm's `k` (3 recon / 6 gap) so evidence VOLUME —
+  and thus committee cost — matches by construction; the only cross-arm difference is source QUALITY.
+- **True-spend accounting**: on a degraded run LangGraph rolls the failed super-step back, dropping its
+  billed calls from `state.llmCalls` → reported cost undercounted ($0.61 vs $0.75 billed). `CostTracker`
+  now retains every usage and the report rolls up from it (also makes the cap cache-accurate).
+- **Gate affordability guard** (`MIN_LOOP_COST_HEADROOM_USD=0.25`): converge before starting a
+  retrieve+debate cycle the budget can't finish, instead of starting-then-rolling-back (which wasted
+  spend and orphaned fresh evidence). Chose this over salvaging a partial/unbalanced debate round.
+- Cache verified working on the agentic path (scrape-cache hits charged 0; locked in with tests).
+
+**Original migration summary follows.**
+
 Move the `retrieve` node from code-driven Firecrawl to a bounded **Haiku researcher agent**
 (one per unresolved question, AI-SDK `generateText` + `webSearch`/`readSource` tools +
 `stopWhen`). Delete `refine` (its query-gen becomes the agent's loop-≥1 mission from the

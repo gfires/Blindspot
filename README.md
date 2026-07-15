@@ -342,6 +342,7 @@ personas, the confidence calibration, and every node's prompt) lives in one read
 | `MAX_LOOP_SPEND_FRACTION` | `0.5` | No single retrieval pass may spend more than this fraction of the initial Firecrawl budget |
 | `LOOP_CONFIDENCE_EPSILON` | `0.05` | Diminishing-returns threshold: a loop that lifts mean confidence by ≤ this and cuts no gaps is futile |
 | `MAX_RUN_COST_USD` | `0.75` | Global LLM cost cap — run halts and synthesizes a partial report (the final answer is exempt) |
+| `MIN_LOOP_COST_HEADROOM_USD` | `0.25` | Gate affordability guard: converge rather than START a retrieve+debate cycle when LLM-cost headroom is below this (avoids a super-step that would blow the cap mid-flight and roll back) |
 | `SYNTHESIS_ANSWER_MAX_TOKENS` | `16000` | Output ceiling for the final answer so it never truncates mid-adjudication |
 | `MAX_EVIDENCE_CHARS_PER_AGENT` | `30000` | Per-agent raw-evidence cap (chars), used only when the digest is off/failed |
 | `MAX_CONCLUSION_CHARS` | `400` | Steering hint for committee conclusion length (a `.describe()` target, not a hard cap) |
@@ -380,6 +381,14 @@ Model assignments for committee roles are in [`src/lib/models/provider.ts`](src/
 | `MAX_AGENT_STEPS` | `8` | Per-agent model-step cap; a never-converging agent can't burn unbounded Haiku calls |
 | `RECON_FLOOR` | `3` | Loop-0 minimum sources an agent must gather before it may stop (code-enforced, never deadlocks) |
 | `READSOURCE_HEAD_CHARS` | `600` | Working-memo head the agent sees per read source (the full page is still stored as Evidence) |
+
+**Evidence volume is pinned to the coded arm.** The reader's per-pass ceiling reuses
+`resultsPerQuestionForLoop(loop)` — **3 on recon, 6 on gap passes**, the coded arm's exact `k` — so the
+committee sees the same evidence *volume* both ways and deliberation cost matches by construction. On
+loop 0, floor == ceiling (`min(RECON_FLOOR, 3) = 3`), so each question gets exactly 3 grounded sources.
+The only thing that differs between the arms is source *quality* (agent judgment vs mechanical triage) —
+which is the eval variable. (This is what keeps the USD-per-Firecrawl-credit ratio in line: LLM cost is
+driven by evidence volume into the committee, not by retrieval mechanics, so volume must match.)
 
 The researcher model is deliberately **not** in `MODEL_CONCURRENCY` — it's shared with the committee's
 redebate Haiku, the per-pass fan-out is already ≤ `MAX_QUESTIONS`, and every Firecrawl call is globally
@@ -422,6 +431,15 @@ If the cap is hit mid-run, a `BudgetExceededError` is caught — the run immedia
 partial report from whatever state has accumulated, writes the trace, and returns results. The final
 objective-level answer is **exempt** from the cap (it records cost but never gates), so the deliverable
 always completes even on a run that otherwise blew its budget.
+
+Two guarantees keep this honest and rare:
+- **Affordability guard** (`MIN_LOOP_COST_HEADROOM_USD`): the gate converges *before* starting a
+  retrieve+debate cycle it can't afford, so we don't spend on a super-step that LangGraph would then
+  roll back mid-flight — the last *complete* loop's claims feed the answer instead.
+- **True-spend accounting**: the `CostTracker` retains every billed call, and the report rolls up *from
+  the tracker* (not `state.llmCalls`). A rolled-back super-step drops its calls from graph state but
+  they were still billed — so without this the reported cost undercounts (a real degraded run showed
+  $0.61 reported vs $0.75 billed). Reporting from the tracker makes the number match what actually ran.
 
 **Token efficiency** — both sides of the bill are engineered down (see "Token efficiency & loop
 control" above for the full mechanism list). In short:
@@ -479,8 +497,8 @@ The trace captures everything that happened during the run:
 - **Debate** — `debate:round` per conversational round (round number + mechanical movement:
   `moved` / `newRebuttals` / `converged`) and `debate:contentions` per question (evidential vs
   interpretive counts, and whether the gate resolved it without an LLM call)
-- **Convergence** — `gate:converged` records why the loop stopped: `budget` / `max-loops` /
-  `no-progress` / `contention-resolved` / gate-decided
+- **Convergence** — `gate:converged` records why the loop stopped: `budget` / `cost-headroom` /
+  `max-loops` / `no-progress` / `contention-resolved` / gate-decided
 - **Final state summary** (`final_state`) — total counts, loop iterations, converged flag, budget
   spent/remaining, Firecrawl calls/credits, and a `debate` rollup (questions debated, conversational
   rounds, evidential/interpretive contention counts, total concessions)

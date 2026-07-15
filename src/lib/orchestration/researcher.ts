@@ -39,7 +39,7 @@ import {
   WEBSEARCH_TOOL_DESCRIPTION,
   READSOURCE_TOOL_DESCRIPTION,
 } from "../prompts";
-import { MAX_AGENT_STEPS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
 
 /**
  * A FCFS Firecrawl-credit pool shared across all of a pass's concurrent researcher agents.
@@ -110,6 +110,10 @@ function dedupeByContentHash(items: Evidence[]): Evidence[] {
 
 const BUDGET_EXHAUSTED_MESSAGE =
   "The retrieval budget for this pass is exhausted — stop searching and finish.";
+const SEARCH_CAP_MESSAGE =
+  "You have used your one web search for this pass. Do NOT search again — read the most relevant of " +
+  "the hits you already have (readSource), then finish. If the evidence is still thin, that is fine: " +
+  "the research loop will run another, sharper search on the next pass.";
 
 /**
  * Run ONE researcher agent for `question` on this pass. `mission` (the user message) says what to
@@ -138,13 +142,19 @@ export async function runResearcher(
   const searchHits = new Map<string, HitMeta>();
   const readUrls = new Set<string>(seenUrls); // seed from prior loops — never re-scrape
   let firstQuery: string | undefined; // sourceQuery fallback for a read that wasn't in searchHits
+  let searchCount = 0; // web searches issued this pass — capped at MAX_SEARCHES_PER_PASS
 
   const webSearch = tool({
     description: WEBSEARCH_TOOL_DESCRIPTION,
     inputSchema: z.object({ query: z.string() }),
     execute: async ({ query }) => {
       getActiveCostTracker()?.check(); // interior $-cap on every tool call
+      // Search cap (the coded arm's fixed 1-query-per-question discipline): once used, refuse further
+      // searches so the agent commits to READING its hits instead of running a query-refinement
+      // treadmill. Enforced in code — the prompt is only a hint. Charges nothing, hits no network.
+      if (searchCount >= MAX_SEARCHES_PER_PASS) return SEARCH_CAP_MESSAGE;
       if (passPool.exhausted) return BUDGET_EXHAUSTED_MESSAGE; // graceful, NOT a throw
+      searchCount += 1;
       if (firstQuery === undefined) firstQuery = query;
       const { hits, credits } = await webSearchRaw(query, firecrawl);
       passPool.charge(credits);

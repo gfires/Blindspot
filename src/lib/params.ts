@@ -167,6 +167,13 @@ export const RESEARCHER_MODEL_ID   = "claude-haiku-4-5-20251001";
 // Per-agent step cap: the researcher's tool-loop stops after at most this many model steps,
 // so a search→search agent that never converges can't burn unbounded Haiku calls.
 export const MAX_AGENT_STEPS       = 8;
+// Web searches a researcher may run PER PASS — the direct analogue of the coded arm's
+// MAX_SEARCH_QUERIES_PER_QUESTION=1. One search returns ~10 snippet hits; judging those snippets IS
+// the triage ("window-shopping"), and reading the best of them is the point. Reformulating BEFORE
+// reading is pure waste (a live run burned 30 searches / 60 credits and read only 4 pages, starving
+// whole questions); if evidence is still thin after reading, the OUTER loop re-runs the agent with a
+// sharper, gap-informed query. Code-enforced in webSearch (the prompt is only a hint). Default 1.
+export const MAX_SEARCHES_PER_PASS = 1;
 // Loop-0 recon floor: minimum sources an agent must gather before it may finish on the first
 // (reconnaissance) pass. Mirrors the coded RECON_RESULTS_PER_QUESTION grounding floor — thin
 // evidence mis-calibrates round-0 claims. Code-enforced (re-drive the agent), never a deadlock:

@@ -451,19 +451,19 @@ Return a decision for every question ID listed above.`;
 // researcher agent (agentic retrieval, P3)
 // ---------------------------------------------------------------------------
 
-/** Tool `description` for the researcher's web-search tool (ONE keyword query per call). */
+/** Tool `description` for the researcher's web-search tool (ONE keyword query, ONCE per pass). */
 export const WEBSEARCH_TOOL_DESCRIPTION =
-  "Search the web with ONE focused keyword query and get back a list of {title, url, snippet} " +
-  "hits. Issue a single query per call, read the snippets, then reflect and search again with a " +
-  "sharper query — do not fire many queries blindly. Judge relevance from the snippet before you " +
-  "decide what to read.";
+  "Search the web with ONE focused keyword query and get back ~10 {title, url, snippet} hits. You " +
+  "get ONE search this pass, so make the query count. Those snippets are your shortlist — judge " +
+  "relevance from them, then READ the best ones. Do NOT search again to refine the query; if the " +
+  "evidence is still thin after reading, the research loop will search again later.";
 
 /** Tool `description` for the researcher's source-reading tool (multi-URL). */
 export const READSOURCE_TOOL_DESCRIPTION =
-  "Read the full text of the MOST PROMISING URLs surfaced by your searches. Pass an array of one " +
-  "or more urls; you get back each source's title and the head of its content as a working memo. " +
-  "The full page is captured as evidence regardless — only pass urls whose snippets look genuinely " +
-  "relevant, so you spend reads where they count.";
+  "Read the full text of the MOST PROMISING URLs from your search hits — this is where evidence " +
+  "actually comes from. Pass an array of one or more urls; you get back each source's title and the " +
+  "head of its content as a working memo. The full page is captured as evidence regardless. Read the " +
+  "genuinely relevant hits rather than searching again — reading is the job, not searching.";
 
 /**
  * System prompt for the researcher agent: it works ONE question, alternating webSearch (plan a
@@ -477,13 +477,14 @@ export function researcherSystemPrompt(question: Question): string {
     question.category ? `CATEGORY: ${question.category}` : "",
     "",
     "You have two tools:",
-    "- webSearch(query): run ONE keyword query and see {title, url, snippet} hits. Reflect between",
-    "  searches — read the snippets, then search again with a sharper query if you need to.",
-    "- readSource(urls): read the full text of the most promising URLs from your searches.",
+    "- webSearch(query): run ONE keyword query and get ~10 {title, url, snippet} hits. You get exactly",
+    "  ONE search this pass — make it count.",
+    "- readSource(urls): read the full text of the most promising URLs from that search.",
     "",
-    "Loop: search, judge the snippets, read the best sources, and search again to fill gaps. Prefer",
-    "reading a genuinely relevant source over issuing another broad query. STOP once you have gathered",
-    "enough solid evidence to address the mission — do not keep searching for its own sake.",
+    "Workflow: issue your ONE search, judge the snippet hits (that judgement IS your triage), then READ",
+    "the genuinely relevant ones — reading is where evidence comes from. Do NOT reformulate and search",
+    "again; if the evidence is still thin after reading your best hits, STOP — the research loop will run",
+    "another, sharper search on the next pass. Working with one good search's results is the point.",
     "",
     "The MISSION below tells you what to look for on THIS pass.",
   ]
@@ -497,7 +498,8 @@ export function researcherSystemPrompt(question: Question): string {
  * loop in researcher.ts; this text just tells the model why it's being asked to continue.
  */
 export function researcherReconNudge(have: number, floor: number): string {
-  return `You have gathered ${have} source(s); this is reconnaissance — gather at least ${floor} before finishing.`;
+  return `You have READ ${have} source(s); this is reconnaissance — read at least ${floor} of your ` +
+    `relevant hits before finishing (do not search again; read more of the hits you already have).`;
 }
 
 /**
@@ -512,10 +514,10 @@ export function researcherReconMission(args: { question: string; queries: string
   return [
     `RECONNAISSANCE for this question: ${question}`,
     "",
-    `Start from these keyword queries: ${queries.join(", ")}.`,
-    "Gather broad, shallow coverage of the space — cast wide before going deep. Aim for enough",
-    "solid, on-topic sources to ground an opening committee assessment and surface where the",
-    "evidence is thin; you do not yet know the specific gaps, so prioritise breadth.",
+    `Run ONE search — start from this keyword query: ${queries.join(" / ")}.`,
+    "Then READ several on-topic sources from the hits to ground an opening committee assessment and",
+    "surface where the evidence is thin. Breadth here means reading a handful of DIFFERENT relevant",
+    "sources, not running more queries — you get one search, so spend the rest of your effort reading.",
   ].join("\n");
 }
 

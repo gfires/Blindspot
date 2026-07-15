@@ -202,7 +202,8 @@ retrieve (agentic)                                    src/lib/orchestration/rese
    │   ▼  one model step per generateText (stepCountIs(1)) so the interior $-cap is
    │      checked before EVERY step:
    │        getActiveCostTracker()?.check()            ← throws → whole run degrades
-   │        webSearch(query)   → snippet hits (ONE keyword query per call)
+   │        webSearch(query)   → snippet hits — ONE search per pass (MAX_SEARCHES_PER_PASS);
+   │                             judging the snippets IS the triage, then it must READ, not re-search
    │        readSource(urls)   → reads full pages (multi-URL); ALWAYS stores each as full
    │                             Evidence tagged questionId; returns a ~600-char head memo
    │        every tool charges REAL post-cache credits to the shared PassPool
@@ -375,6 +376,7 @@ Model assignments for committee roles are in [`src/lib/models/provider.ts`](src/
 | Parameter | Default | What it does |
 | --- | --- | --- |
 | `RESEARCHER_MODEL_ID` | `claude-haiku-4-5-20251001` | The researcher agent's model — search planning, not deep reasoning |
+| `MAX_SEARCHES_PER_PASS` | `1` | Web searches a researcher may run per pass — the analogue of the coded arm's 1-query-per-question; forces the agent to READ its hits instead of a query-refinement treadmill (the outer loop re-searches with a gap-informed query later) |
 | `MAX_AGENT_STEPS` | `8` | Per-agent model-step cap; a never-converging agent can't burn unbounded Haiku calls |
 | `RECON_FLOOR` | `3` | Loop-0 minimum sources an agent must gather before it may stop (code-enforced, never deadlocks) |
 | `READSOURCE_HEAD_CHARS` | `600` | Working-memo head the agent sees per read source (the full page is still stored as Evidence) |

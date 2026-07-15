@@ -66,7 +66,7 @@ vi.mock("@/lib/blocklist", async () => {
 import { generateText } from "ai";
 import { runResearcher, PassPool } from "@/lib/orchestration/researcher";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "@/lib/orchestration/cost-tracker";
-import { MAX_AGENT_STEPS, RECON_FLOOR, RESEARCHER_MODEL_ID } from "@/lib/params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID } from "@/lib/params";
 import type { Question } from "@/lib/schemas/state";
 
 const q = (id: string): Question => ({
@@ -200,23 +200,45 @@ describe("runResearcher — budget exhaustion", () => {
     expect(pool.spent).toBe(1);
   });
 
-  it("webSearch returns a graceful message (no throw) once the pool is exhausted mid-step", async () => {
-    // One model step issues TWO searches: the first live search (2 credits) exhausts the seed-2
-    // pool; the second must return the graceful string, NOT throw.
+  it("webSearch returns the budget-exhausted message (no throw) when the pool drains mid-step", async () => {
+    // Within one step: a read exhausts the seed-1 pool, then a webSearch must return the graceful
+    // string and never hit the network — NOT throw. (Mirrors a concurrent agent draining the pool.)
     const returns: unknown[] = [];
     const probe: StepFn = async (tools) => {
-      returns.push(await tools.webSearch.execute({ query: "a" }, ctx)); // charges 2 → exhausts
-      returns.push(await tools.webSearch.execute({ query: "b" }, ctx)); // exhausted → graceful
+      await tools.readSource.execute({ urls: ["https://ex.com/1"] }, ctx); // charges 1 → exhausts
+      returns.push(await tools.webSearch.execute({ query: "a" }, ctx)); // exhausted → graceful
       return true;
     };
     scriptModel([probe, stopStep]);
 
-    const pool = new PassPool(2);
-    await runResearcher(q("q3"), "m", 1, new Set(), pool);
+    await runResearcher(q("q3"), "m", 1, new Set(), new PassPool(1));
 
-    expect(Array.isArray(returns[0])).toBe(true); // the first search returned hits
-    expect(typeof returns[1]).toBe("string");
-    expect(returns[1] as string).toContain("exhausted");
+    expect(typeof returns[0]).toBe("string");
+    expect(returns[0] as string).toContain("exhausted");
+    expect(h.searchCalls).toBe(0); // webSearch refused before any network call
+  });
+});
+
+describe("runResearcher — search cap (MAX_SEARCHES_PER_PASS)", () => {
+  it("refuses a SECOND web search — the agent must read its hits, not reformulate", async () => {
+    // The coded arm's 1-query-per-question discipline: one search, then read. A second search this
+    // pass is refused in code (default cap 1), charges nothing, and never touches the network.
+    const returns: unknown[] = [];
+    const probe: StepFn = async (tools) => {
+      returns.push(await tools.webSearch.execute({ query: "a" }, ctx)); // 1st: real search
+      returns.push(await tools.webSearch.execute({ query: "b" }, ctx)); // 2nd: capped
+      return true;
+    };
+    scriptModel([probe, stopStep]);
+
+    const pool = new PassPool(100);
+    await runResearcher(q("q1"), "m", 1, new Set(), pool);
+
+    expect(Array.isArray(returns[0])).toBe(true);          // first search returned hits
+    expect(typeof returns[1]).toBe("string");              // second was refused
+    expect(returns[1] as string).toMatch(/one web search|read/i);
+    expect(h.searchCalls).toBe(MAX_SEARCHES_PER_PASS);     // exactly the cap (1) hit the network
+    expect(pool.spent).toBe(2);                            // only the one real search charged (2 credits)
   });
 });
 

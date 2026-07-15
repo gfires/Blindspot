@@ -17,7 +17,7 @@ import type { ArmTokens } from "./eval";
 import { toAnnotatedUsage, estimateCostUsd } from "./eval";
 import type { ResearchStateT } from "../schemas/state";
 import type { ResponseStanceT } from "../schemas/claim";
-import { extractContentions } from "./debate";
+import { extractContentions, committeeStance, type CommitteeStance } from "./debate";
 import { scopeEvidenceToQuestions } from "./graph";
 import { MAX_RUN_COST_USD } from "../params";
 
@@ -57,7 +57,18 @@ export interface RunMechanics {
     evidencePerCredit: number;
   };
   deliberation: {
+    /** Questions whose conversational rounds RAN (round ≥1 present) — a genuine debate. */
     questionsDebated: number;
+    /** Questions SKIPPED after the blind opening because the roles showed no genuine disagreement. */
+    questionsSkipped: number;
+    /** committeeStance breakdown of the skipped questions (how many insufficient vs agreed-answer). */
+    skippedByStance: Partial<Record<CommitteeStance, number>>;
+    /**
+     * Debated questions that actually moved something: a role's stance changed between its round-0
+     * and final claim, OR a contention was resolved (a peer conceded). Purely mechanical — the
+     * counterpart of a "debated but unanimous" waste flag; no invented quality score.
+     */
+    productiveQuestions: number;
     conversationalRounds: number;
     avgRoundsPerQuestion: number;
     moved: number;
@@ -173,6 +184,9 @@ export function computeRunMechanics(
   const newRebuttals = debateRoundEntries.reduce((s, d) => s + num(d.newRebuttals), 0);
 
   let questionsDebated = 0;
+  let questionsSkipped = 0;
+  let productiveQuestions = 0;
+  const skippedByStance: Partial<Record<CommitteeStance, number>> = {};
   let conversationalRounds = 0;
   let evidential = 0;
   let interpretive = 0;
@@ -182,11 +196,36 @@ export function computeRunMechanics(
 
   for (const [qid, rounds] of Object.entries(transcripts)) {
     if (!Array.isArray(rounds) || rounds.length === 0) continue;
-    questionsDebated += 1;
-    conversationalRounds += Math.max(0, rounds.length - 1); // round 0 is the opening, not debate
+    // Rounds RAN (≥1 conversational round) → a real debate; only the blind opening → skipped on
+    // agreement. Skipped questions are bucketed by the committee's position over the opening claims.
+    const ran = rounds.length > 1;
+    if (ran) {
+      questionsDebated += 1;
+      conversationalRounds += rounds.length - 1; // round 0 is the opening, not debate
+    } else {
+      questionsSkipped += 1;
+      const stance = committeeStance(rounds[0]?.claims ?? []);
+      skippedByStance[stance] = (skippedByStance[stance] ?? 0) + 1;
+    }
+
     const finalRound = rounds[rounds.length - 1];
     const claims = finalRound?.claims ?? [];
     if (claims.length === 0) continue;
+
+    // Productive = debated AND something moved: a role's stance shifted round-0 → final, or a peer
+    // conceded in a conversational round (a contention resolved). Both are read straight off the
+    // transcript — no invented score.
+    if (ran) {
+      const opening = rounds[0]?.claims ?? [];
+      const openStance = new Map(opening.map((c) => [c.agentRole, c.stance]));
+      const stanceMoved = claims.some(
+        (c) => openStance.has(c.agentRole) && openStance.get(c.agentRole) !== c.stance,
+      );
+      const contentionResolved = rounds
+        .slice(1)
+        .some((r) => (r.claims ?? []).some((c) => (c.responses ?? []).some((resp) => resp.stance === "concede")));
+      if (stanceMoved || contentionResolved) productiveQuestions += 1;
+    }
 
     for (const c of extractContentions(qid, claims)) {
       if (c.type === "evidential") evidential += 1;
@@ -291,6 +330,9 @@ export function computeRunMechanics(
     },
     deliberation: {
       questionsDebated,
+      questionsSkipped,
+      skippedByStance,
+      productiveQuestions,
       conversationalRounds,
       avgRoundsPerQuestion,
       moved,
@@ -351,9 +393,19 @@ export function formatMechanicsReport(m: RunMechanics): string {
   }
 
   // DELIBERATION
+  const insufficientSkipped = d.skippedByStance.insufficient ?? 0;
+  const agreedSkipped = (d.skippedByStance.supports ?? 0) + (d.skippedByStance.opposes ?? 0);
+  const unproductiveDebated = d.questionsDebated - d.productiveQuestions;
+  const wasteFlag =
+    unproductiveDebated > 0 ? `  ⚠ ${unproductiveDebated} debated but unanimous` : "";
   L.push("DELIBERATION");
   L.push(
-    `  ${d.questionsDebated} questions debated · ${d.conversationalRounds} conversational rounds ` +
+    `  debated ${d.questionsDebated} · skipped ${d.questionsSkipped} ` +
+      `(${insufficientSkipped} insufficient→retrieve, ${agreedSkipped} agreed) · ` +
+      `productive ${d.productiveQuestions}/${d.questionsDebated}${wasteFlag}`,
+  );
+  L.push(
+    `  ${d.conversationalRounds} conversational rounds ` +
       `(${d.avgRoundsPerQuestion.toFixed(1)}/q) · ${d.moved} moves / ${d.newRebuttals} new rebuttals`,
   );
   L.push(

@@ -351,6 +351,76 @@ describe("computeRunMechanics — absent agentic signals", () => {
   });
 });
 
+// A run that mixes debated and skipped questions (Phase C):
+// - qA: DEBATED and productive (the historian's stance moved supports→opposes round0→final)
+// - qB: DEBATED but unproductive (identical stances round0→final, no concession) → ⚠
+// - qC: SKIPPED on shared uncertainty (only the blind opening; all 'insufficient')
+// - qD: SKIPPED on agreement (only the blind opening; unanimous 'supports')
+function phaseCTranscripts(): Record<string, DebateRound[]> {
+  const round = (r: number, claims: Claim[]): DebateRound => ({ round: r, claims });
+  return {
+    qA: [
+      round(0, [claim("historian", 0.5, { stance: "supports" }), claim("skeptic", 0.5, { stance: "opposes" })]),
+      round(1, [
+        claim("historian", 0.6, { stance: "opposes", round: 1 }), // stance MOVED → productive
+        claim("skeptic", 0.5, { stance: "opposes", round: 1 }),
+      ]),
+    ],
+    qB: [
+      round(0, [claim("historian", 0.5, { stance: "supports" }), claim("skeptic", 0.5, { stance: "opposes" })]),
+      round(1, [
+        claim("historian", 0.5, { stance: "supports", round: 1 }), // no move, no concede → unproductive
+        claim("skeptic", 0.5, { stance: "opposes", round: 1 }),
+      ]),
+    ],
+    qC: [round(0, [claim("historian", 0.2, { stance: "insufficient" }), claim("skeptic", 0.2, { stance: "insufficient" })])],
+    qD: [round(0, [claim("historian", 0.8, { stance: "supports" }), claim("skeptic", 0.8, { stance: "supports" })])],
+  };
+}
+
+describe("computeRunMechanics — debated vs skipped (Phase C)", () => {
+  const m = computeRunMechanics([], makeState({ debateTranscripts: phaseCTranscripts() }), makeTokens(0));
+
+  it("counts questions whose conversational rounds RAN vs those skipped on agreement", () => {
+    expect(m.deliberation.questionsDebated).toBe(2); // qA, qB
+    expect(m.deliberation.questionsSkipped).toBe(2); // qC, qD
+  });
+
+  it("breaks the skipped questions down by committeeStance", () => {
+    expect(m.deliberation.skippedByStance.insufficient).toBe(1); // qC
+    expect(m.deliberation.skippedByStance.supports).toBe(1); // qD
+    expect(m.deliberation.skippedByStance.opposes ?? 0).toBe(0);
+  });
+
+  it("counts a debated question productive only when a stance moved or a contention resolved", () => {
+    expect(m.deliberation.productiveQuestions).toBe(1); // qA moved; qB did not
+  });
+
+  it("formats the debated/skipped headline and flags debated-but-unanimous", () => {
+    const out = formatMechanicsReport(m);
+    expect(out).toContain("debated 2 · skipped 2 (1 insufficient→retrieve, 1 agreed)");
+    expect(out).toMatch(/debated but unanimous/);
+  });
+
+  it("does NOT flag debated-but-unanimous when every debated question was productive", () => {
+    const productiveOnly = computeRunMechanics(
+      [],
+      makeState({ debateTranscripts: { qA: phaseCTranscripts().qA } }),
+      makeTokens(0),
+    );
+    expect(productiveOnly.deliberation.productiveQuestions).toBe(1);
+    expect(formatMechanicsReport(productiveOnly)).not.toMatch(/debated but unanimous/);
+  });
+
+  it("empty inputs yield zero debated/skipped/productive and do not throw", () => {
+    const empty = computeRunMechanics([], makeState(), makeTokens(0));
+    expect(empty.deliberation.questionsDebated).toBe(0);
+    expect(empty.deliberation.questionsSkipped).toBe(0);
+    expect(empty.deliberation.productiveQuestions).toBe(0);
+    expect(() => formatMechanicsReport(empty)).not.toThrow();
+  });
+});
+
 describe("formatMechanicsReport", () => {
   it("contains section headers and key figures", () => {
     const m = computeRunMechanics(fixtureEntries(), fixtureState(), makeTokens(1.0));

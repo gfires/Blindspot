@@ -156,6 +156,26 @@ export const DEBATE_CONSENSUS_MIN_CONFIDENCE  = 0.6;
 // Round-over-round: a confidence move at or below this counts as "no movement" for convergence.
 export const DEBATE_CONFIDENCE_EPSILON        = 0.05;
 
+// -- Orchestration: researcher (agentic retrieval) ---------------------------
+
+// The researcher agent runs on Haiku — its job is search PLANNING (pick a query, judge
+// snippets, decide what to read), not deep reasoning. This id must exist in eval.ts
+// MODEL_COST. Deliberately NOT added to MODEL_CONCURRENCY: it's shared with the committee's
+// redebate roles, so a cap there would couple committee throttling — the ≤MAX_QUESTIONS
+// per-pass fan-out is self-bounding and every Firecrawl call is already globally capped.
+export const RESEARCHER_MODEL_ID   = "claude-haiku-4-5-20251001";
+// Per-agent step cap: the researcher's tool-loop stops after at most this many model steps,
+// so a search→search agent that never converges can't burn unbounded Haiku calls.
+export const MAX_AGENT_STEPS       = 8;
+// Loop-0 recon floor: minimum sources an agent must gather before it may finish on the first
+// (reconnaissance) pass. Mirrors the coded RECON_RESULTS_PER_QUESTION grounding floor — thin
+// evidence mis-calibrates round-0 claims. Code-enforced (re-drive the agent), never a deadlock:
+// the agent still stops on maxSteps / pool exhaustion / no-tool-call regardless (see §11).
+export const RECON_FLOOR           = 3;
+// The working-memo head the agent sees per readSource result (title + first N chars). The FULL
+// page is still stored as Evidence for the committee — this only bounds the agent's context.
+export const READSOURCE_HEAD_CHARS = 600;
+
 // -- Orchestration: per-model concurrency + retries (L6) ----------------------
 
 // Global in-flight cap per model id. gpt-4o has a low TPM ceiling, so we serialize its

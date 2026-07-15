@@ -470,6 +470,59 @@ export function refinePrompt(sectionText: string[]): string {
  * `sourceLines` (the SOURCES block) are computed by the recommend node's [S#] labelling logic and
  * passed in; this builder owns only the voice and grounding instructions around them.
  */
+// ---------------------------------------------------------------------------
+// researcher agent (agentic retrieval, P3)
+// ---------------------------------------------------------------------------
+
+/** Tool `description` for the researcher's web-search tool (ONE keyword query per call). */
+export const WEBSEARCH_TOOL_DESCRIPTION =
+  "Search the web with ONE focused keyword query and get back a list of {title, url, snippet} " +
+  "hits. Issue a single query per call, read the snippets, then reflect and search again with a " +
+  "sharper query — do not fire many queries blindly. Judge relevance from the snippet before you " +
+  "decide what to read.";
+
+/** Tool `description` for the researcher's source-reading tool (multi-URL). */
+export const READSOURCE_TOOL_DESCRIPTION =
+  "Read the full text of the MOST PROMISING URLs surfaced by your searches. Pass an array of one " +
+  "or more urls; you get back each source's title and the head of its content as a working memo. " +
+  "The full page is captured as evidence regardless — only pass urls whose snippets look genuinely " +
+  "relevant, so you spend reads where they count.";
+
+/**
+ * System prompt for the researcher agent: it works ONE question, alternating webSearch (plan a
+ * query, judge snippets) and readSource (read the best hits), and stops when it has enough. The
+ * MISSION for this pass (recon on loop 0, contested gaps later) arrives as the user message.
+ */
+export function researcherSystemPrompt(question: Question): string {
+  return [
+    "You are a research analyst gathering evidence for ONE specific question. Work only this question:",
+    `QUESTION: ${question.text}`,
+    question.category ? `CATEGORY: ${question.category}` : "",
+    "",
+    "You have two tools:",
+    "- webSearch(query): run ONE keyword query and see {title, url, snippet} hits. Reflect between",
+    "  searches — read the snippets, then search again with a sharper query if you need to.",
+    "- readSource(urls): read the full text of the most promising URLs from your searches.",
+    "",
+    "Loop: search, judge the snippets, read the best sources, and search again to fill gaps. Prefer",
+    "reading a genuinely relevant source over issuing another broad query. STOP once you have gathered",
+    "enough solid evidence to address the mission — do not keep searching for its own sake.",
+    "",
+    "The MISSION below tells you what to look for on THIS pass.",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/**
+ * The recon-floor nudge: appended by the CODE (not relied on as enforcement) when a loop-0 agent
+ * tried to stop before gathering RECON_FLOOR sources. The floor is enforced by re-driving the
+ * loop in researcher.ts; this text just tells the model why it's being asked to continue.
+ */
+export function researcherReconNudge(have: number, floor: number): string {
+  return `You have gathered ${have} source(s); this is reconnaissance — gather at least ${floor} before finishing.`;
+}
+
 export function answerPrompt(args: {
   objective: string;
   constraintsLine: string;

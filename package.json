@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "compare": "tsx scripts/compare-arms.ts",
+    "run-arm": "tsx scripts/run-arm.ts",
     "smoke:supabase": "tsx scripts/supabase-smoke.ts"
   },
   "dependencies": {

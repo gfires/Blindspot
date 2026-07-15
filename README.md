@@ -4,12 +4,17 @@
 > Type an industry, get an evidence-backed report with scores, an actionable thesis, and
 > concrete next steps — all grounded in real sources with direct quotes.
 
-Two research arms run side-by-side for direct comparison:
+Three research arms run side-by-side for direct comparison:
 
 - **Baseline** — single-prompt pipeline: search → triage → scrape → analyze (the original system)
-- **Orchestrated** — multi-agent LangGraph loop: decompose → retrieve → digest → debate → gate → recommend
+- **Orchestrated** — multi-agent LangGraph loop with **coded** retrieval (the deterministic
+  search → triage → scrape workflow): decompose → retrieve → digest → debate → gate → recommend.
+  This is `retrievalMode: "coded"`, the permanent eval **control** arm.
+- **Agentic** — the **same graph**, but `retrievalMode: "agentic"`: the `retrieve` node becomes one
+  bounded Haiku **researcher agent per unresolved question**. Everything else (decompose, digest,
+  debate, gate, recommend) is byte-identical to the orchestrated arm — only *retrieval* became agentic.
 
-The orchestrated arm decomposes a topic into questions, then runs **two nested loops**:
+Both graph arms decompose a topic into questions, then run **two nested loops**:
 
 - **Debate loop (inner)** — for each question a four-agent committee (Historian, Operator, Investor,
   Skeptic) deliberates over a *frozen* evidence snapshot. Round 0 is the **blind opening**: each role
@@ -27,8 +32,9 @@ The orchestrated arm decomposes a topic into questions, then runs **two nested l
 Preserved disagreement is a first-class output: a committee that "could not agree, and here is the
 exact fault line" is more honest than a forced consensus.
 
-> **Status:** the debate mechanics (Wave 3, phases D1–D5) are implemented and unit-tested (175 tests
-> green), but the live A/B run that quantifies debate-vs-poll is still pending a paid run (see
+> **Status:** the debate mechanics (Wave 3, phases D1–D5) and the **agentic retrieval** migration
+> (the `agentic` arm) are both implemented and unit-tested (287 tests green). The live A/B runs that
+> quantify debate-vs-poll and agentic-vs-orchestrated retrieval are still pending a paid run (see
 > [STATUS.md](STATUS.md)). The debate-arena UI that renders the back-and-forth is tracked separately;
 > today's live visualization still shows each role's round-0 claim, not the full transcript.
 
@@ -56,14 +62,21 @@ Supabase is optional-but-recommended: without it the app still runs, just uncach
 price. Create the schema from [`supabase/schema.sql`](supabase/schema.sql) and add `blindspot` to the
 project's **Exposed schemas**, then confirm with `npm run smoke:supabase`.
 
-### Run the A/B comparison
+### Run the A/B/C comparison
 
 ```bash
-npx tsx scripts/compare-arms.ts "freight brokerage"
+npm run compare -- "freight brokerage"                # all three arms
+npx tsx scripts/compare-arms.ts "freight brokerage"   # equivalent
+
+npm run run-arm agentic "freight brokerage"           # one arm: baseline | orchestrated | agentic
+npm run run-arm agentic "freight brokerage" --budget=50   # optional Firecrawl-budget override
 ```
 
-Output lands in `compare-output/<topic>-<timestamp>.json` with both arms' reports, token usage,
-Firecrawl costs, and wall-clock time side by side.
+`compare` runs all **three** arms (baseline, orchestrated, agentic) and lands the output in
+`compare-output/<topic>-<timestamp>.json` as `{ topic, runAt, arms: ArmResult[] }` — each arm's
+report, token usage, Firecrawl costs, and wall-clock time side by side. Everything is fully
+standalone (tsx scripts, no Next.js UI needed). Note: the live SSE UI runs only the coded/orchestrated
+arm; agentic live-streaming is out of scope, so the agentic arm is measured via these scripts.
 
 ---
 
@@ -102,17 +115,23 @@ industry
    Report + opportunity score streamed to browser via SSE.
 ```
 
-### Orchestrated pipeline
+### Orchestrated / agentic pipeline
+
+The two graph arms share this pipeline; only the **RETRIEVE** node differs (chosen by
+`retrievalMode`). The diagram shows the coded (orchestrated) retrieve; the agentic retrieve is
+detailed in the next section.
 
 ```
 topic
    │
    ▼  DECOMPOSE                                        src/lib/orchestration/graph.ts
-   │  Manager (Haiku 4.5) breaks topic into 3–5 research questions.
+   │  Manager (Haiku 4.5) breaks topic into 3–4 research questions + one keyword query each.
    │
-   ▼  RETRIEVE                                         src/lib/evidence/firecrawl.ts
-   │  search() fetches web evidence for each unresolved question in parallel.
-   │  Evidence is append-only across loops. Query count capped to ¼ remaining budget.
+   ▼  RETRIEVE  (retrievalMode: "coded")               src/lib/orchestration/graph.ts
+   │  Coded body: search() fetches web evidence for each unresolved question in parallel,
+   │  triages, and scrapes. Evidence is append-only across loops. Per-pass spend is reserved
+   │  to MAX_LOOP_SPEND_FRACTION of the initial budget so a broad first pass can't starve the
+   │  gap-targeted passes. (retrievalMode "agentic" swaps this node — see "Agentic retrieval".)
    │
    ▼  DIGEST                                           src/lib/orchestration/digest.ts
    │  One cheap Haiku pass (L2) compresses each fresh source into a single ≤400-char item
@@ -145,22 +164,66 @@ topic
    │    - Agreement with vague gaps → NO;  Low budget (≤2) → only highest-gap question
    │  If retrieve count exceeds remaining budget, clamped to top-N by gapCount.
    │
-   ▼  REFINE (loop only)                               src/lib/orchestration/graph.ts
-   │  Manager (Haiku 4.5) turns the CONTESTED gaps — the missingEvidence named by the roles on
-   │  either side of an evidential contention — into 1–3 targeted queries per question, aiming
-   │  the next retrieval at the actual fault line (falls back to all gaps when none is specifically
-   │  contested; skips if no gaps at all). The next loop re-digests only fresh evidence and
-   │  re-debates only questions with new evidence; those re-debates drop the 3 Claude roles to
-   │  Haiku (L4) and seed each role with its OWN final claim from the prior snapshot. A loop that
-   │  retrieves zero new evidence short-circuits the gate (no-progress).
+   ├─(continue)─► RETRIEVE                             loop back while the gate wants more
+   │  When the gate continues AND budget remains (routeAfterGate), loop straight back to
+   │  RETRIEVE — there is no separate refine node. The next retrieval targets the CONTESTED
+   │  evidential gaps: the coded path derives gap queries; the agentic path builds them into each
+   │  researcher's loop-≥1 mission (missionForQuestion). The next loop re-digests only fresh
+   │  evidence and re-debates only questions with new evidence, dropping the 3 Claude roles to
+   │  Haiku (L4) and seeding each with its OWN final claim. A loop that retrieves zero new
+   │  evidence short-circuits the gate (no-progress).
    │
-   ▼  RECOMMEND                                        src/lib/orchestration/graph.ts
+   ▼  RECOMMEND  (stop)                                src/lib/orchestration/graph.ts
    Synthesize ResearchReport: per-question confidence, evidence graph,
-   unresolved questions, budget spent.
+   unresolved questions, budget spent, and a cited objective-level answer.
 ```
 
 The graph uses a LangGraph `MemorySaver` checkpointer — every super-step is persisted for
-state history and time-travel debugging.
+state history and time-travel debugging. `refine` (a former query-generation node) was removed
+in the agentic-retrieval migration; the gate now loops directly to `retrieve`.
+
+### Agentic retrieval (`retrievalMode: "agentic"`)
+
+The agentic arm replaces the coded retrieve node with a swarm of bounded **researcher agents** —
+one per unresolved question, run concurrently, all drawing first-come-first-served from **one shared
+`PassPool`** of Firecrawl credits (`researcher.ts`). Everything upstream and downstream is unchanged;
+the committee still deliberates over a frozen snapshot.
+
+```
+retrieve (agentic)                                    src/lib/orchestration/researcher.ts
+   │  For each unresolved question, runResearcher() runs a Haiku tool-loop:
+   │
+   │   mission (missionForQuestion, graph.ts):
+   │     loop 0   → reconnaissance from the question's decompose keyword queries
+   │                (code-enforced RECON_FLOOR minimum sources before it may stop)
+   │     loop ≥1  → the CONTESTED EVIDENTIAL gaps + the titles/urls already gathered
+   │                (so it doesn't re-chase); "" when no gap → the question is skipped
+   │   │
+   │   ▼  one model step per generateText (stepCountIs(1)) so the interior $-cap is
+   │      checked before EVERY step:
+   │        getActiveCostTracker()?.check()            ← throws → whole run degrades
+   │        webSearch(query)   → snippet hits (ONE keyword query per call)
+   │        readSource(urls)   → reads full pages (multi-URL); ALWAYS stores each as full
+   │                             Evidence tagged questionId; returns a ~600-char head memo
+   │        every tool charges REAL post-cache credits to the shared PassPool
+   │        (cache hit = 0, live search = 2, live scrape = 1)
+   │   │
+   │   ▼  stops on the FIRST of: MAX_AGENT_STEPS · PassPool exhausted · check() throws ·
+   │      the model has enough (subject to the loop-0 RECON_FLOOR)
+   │
+   ▼  node reconciles: dedupe by contentHash across agents → sum the pool's REAL credits →
+     ONE signed budget delta + newEvidenceCount + a totalUsage rollup (retrieve stays the
+     SOLE budget writer, exactly like the coded body).
+```
+
+**Evidence scoping.** Each stored Evidence carries `questionId` (the agent that produced it owns
+exactly one question). `scopeEvidenceToQuestions` prefers `questionId`, so an agent's *self-invented*
+queries still reach the committee — the coded arm continues to scope by `sourceQuery`, byte-identical.
+
+**Why the roles stay non-agentic.** Only retrieval — a genuine search problem — became an agent.
+The committee runs where the guarantees live (a frozen evidence snapshot, bounded cost, deterministic
+convergence), so the four roles remain single-shot, tool-less LLM calls. Agency where it helps,
+determinism where it must hold.
 
 ### Token efficiency & loop control (Wave 2)
 
@@ -197,7 +260,7 @@ earn four agents; the synthesis-through-disagreement is the product. The whole t
 loops, with evidence FROZEN during a debate** — only the outer retrieval loop ever changes it:
 
 ```
-RETRIEVE ─► DIGEST ─► DEBATE ─► GATE ─► (REFINE ─► RETRIEVE) ─► …
+RETRIEVE ─► DIGEST ─► DEBATE ─► GATE ─►(continue: loop back to)─► RETRIEVE ─► …
                       └── inner debate loop lives entirely inside the DEBATE node ──┘
 ```
 
@@ -218,7 +281,8 @@ RETRIEVE ─► DIGEST ─► DEBATE ─► GATE ─► (REFINE ─► RETRIEVE)
   a hard `MAX_DEBATE_ROUNDS` cap, or round-0 consensus. At the gate, `contentionRoute` sends
   interpretive-only (or agreed) questions straight to *resolve* at **zero LLM cost** — retrieving
   can't settle a difference of interpretation — and only evidential contentions plus budget trigger
-  another retrieval, whose queries `refine` draws from the *contested* gaps specifically.
+  another retrieval, aimed at the *contested* gaps specifically (the coded retrieve derives gap
+  queries; the agentic retrieve builds them into each researcher's loop-≥1 mission).
 - **Model mix — heavy models spent sparingly** (`provider.ts` `modelForDebateRound`): round 0 is the
   Sonnet trio + gpt-4o skeptic; conversational rounds drop the constructive roles to Haiku (declining
   marginal value), and the skeptic holds gpt-4o through `DEBATE_SKEPTIC_STRONG_ROUNDS` then drops to
@@ -265,12 +329,19 @@ personas, the confidence calibration, and every node's prompt) lives in one read
 | Parameter | Default | What it does |
 | --- | --- | --- |
 | `MIN_QUESTIONS` | `3` | Minimum questions from decomposition |
-| `MAX_QUESTIONS` | `5` | Maximum questions from decomposition |
-| `RESULTS_PER_QUESTION` | `6` | Web results fetched per question per loop |
+| `MAX_QUESTIONS` | `4` | Maximum questions from decomposition |
+| `MAX_SEARCH_QUERIES_PER_QUESTION` | `1` | Keyword queries decompose emits per question (clamped in code) |
+| `RESULTS_PER_QUESTION` | `6` | Web results per query on the gap-targeted (loop ≥1) passes |
+| `RECON_RESULTS_PER_QUESTION` | `3` | Shallower results per query on the loop-0 reconnaissance pass (grounding floor: ≥3) |
 | `SEARCH_CANDIDATES_PER_QUESTION` | `10` | Raw search hits fetched per query before filtering |
+| `TRIAGE_ENABLED` | `true` | Coded retrieve: gpt-4o-mini relevance-scores candidates before scraping (`false` → rank cap) |
+| `MIN_TRIAGE_SCORE` | `4` | Keep bar for triaged candidates (below the unscored default so a triage failure never over-filters) |
 | `MAX_LOOP_ITERATIONS` | `5` | Hard cap on retrieve→debate→gate loops |
 | `TOTAL_FIRECRAWL_BUDGET` | `80` | Hard cap on total Firecrawl credits |
-| `MAX_RUN_COST_USD` | `2.00` | Global LLM cost cap — run halts and synthesizes partial report |
+| `MAX_LOOP_SPEND_FRACTION` | `0.5` | No single retrieval pass may spend more than this fraction of the initial Firecrawl budget |
+| `LOOP_CONFIDENCE_EPSILON` | `0.05` | Diminishing-returns threshold: a loop that lifts mean confidence by ≤ this and cuts no gaps is futile |
+| `MAX_RUN_COST_USD` | `0.75` | Global LLM cost cap — run halts and synthesizes a partial report (the final answer is exempt) |
+| `SYNTHESIS_ANSWER_MAX_TOKENS` | `16000` | Output ceiling for the final answer so it never truncates mid-adjudication |
 | `MAX_EVIDENCE_CHARS_PER_AGENT` | `30000` | Per-agent raw-evidence cap (chars), used only when the digest is off/failed |
 | `MAX_CONCLUSION_CHARS` | `400` | Steering hint for committee conclusion length (a `.describe()` target, not a hard cap) |
 
@@ -290,7 +361,7 @@ personas, the confidence calibration, and every node's prompt) lives in one read
 
 | Parameter | Default | What it does |
 | --- | --- | --- |
-| `MAX_DEBATE_ROUNDS` | `3` | Hard cap on conversational rounds per question (round 0 opening excluded) |
+| `MAX_DEBATE_ROUNDS` | `2` | Hard cap on conversational rounds per question (round 0 opening excluded) |
 | `DEBATE_SKEPTIC_STRONG_ROUNDS` | `2` | Skeptic stays gpt-4o through this round, then drops to gpt-4o-mini |
 | `DEBATE_CONSENSUS_SPREAD` | `0.2` | Round-0 fast-path: max−min confidence must be under this to count as agreement |
 | `DEBATE_CONSENSUS_MIN_CONFIDENCE` | `0.6` | Round-0 fast-path: every role must be at/above this (rules out shared uncertainty) |
@@ -298,6 +369,19 @@ personas, the confidence calibration, and every node's prompt) lives in one read
 
 Model assignments for committee roles are in [`src/lib/models/provider.ts`](src/lib/models/provider.ts)
 (`modelForRole` for the opening, `modelForDebateRound` for conversational rounds).
+
+### Orchestration — agentic retrieval (`retrievalMode: "agentic"`)
+
+| Parameter | Default | What it does |
+| --- | --- | --- |
+| `RESEARCHER_MODEL_ID` | `claude-haiku-4-5-20251001` | The researcher agent's model — search planning, not deep reasoning |
+| `MAX_AGENT_STEPS` | `8` | Per-agent model-step cap; a never-converging agent can't burn unbounded Haiku calls |
+| `RECON_FLOOR` | `3` | Loop-0 minimum sources an agent must gather before it may stop (code-enforced, never deadlocks) |
+| `READSOURCE_HEAD_CHARS` | `600` | Working-memo head the agent sees per read source (the full page is still stored as Evidence) |
+
+The researcher model is deliberately **not** in `MODEL_CONCURRENCY` — it's shared with the committee's
+redebate Haiku, the per-pass fan-out is already ≤ `MAX_QUESTIONS`, and every Firecrawl call is globally
+capped by `FIRECRAWL_CONCURRENCY`.
 
 ### Budget model
 
@@ -310,21 +394,32 @@ Two independent budget systems keep runs in check:
   accumulates. This is order-independent, so two nodes updating budget in the same LangGraph
   super-step can't lose an update the way a last-write-wins replace reducer would. `retrieve` is
   the sole writer (`budgetRemaining: -credits`, `budgetSpent: +credits`); `gate` never touches
-  budget. The initial budget is seeded as a delta onto the default of 0.
-- `retrieve` caps query count to `floor(budgetRemaining / 4)` so search alone doesn't blow the budget.
+  budget. The initial budget is seeded as a delta onto the default of 0. This holds for BOTH retrieve
+  bodies — the agentic node reconciles its shared `PassPool`'s real credits into the same single delta.
+- **Per-pass reservation** (`MAX_LOOP_SPEND_FRACTION`): no single retrieval pass may spend more than
+  half the initial budget, so a broad first pass can't drain the pool and starve the gap-targeted
+  passes. Coded caps its query count to fit; agentic seeds the pass `PassPool` with the same clamp.
+- **Agentic pass pool** (`researcher.ts`): all of a pass's researcher agents draw first-come-first-
+  served from one pool, charging REAL post-cache credits (cache hit = 0, live search = 2, live scrape
+  = 1). Once exhausted, tools refuse further calls gracefully (a message / a partial read), so a pass
+  never runs away.
 - `gate` clamps: if the LLM requests more retrievals than budget allows, only top-N by `gapCount` proceed.
 
-**LLM cost cap** (`MAX_RUN_COST_USD`, default $2.00) — a per-run USD ceiling enforced by a
+**LLM cost cap** (`MAX_RUN_COST_USD`, default $0.75) — a per-run USD ceiling enforced by a
 `CostTracker` (`cost-tracker.ts`). The tracker lives in `AsyncLocalStorage` keyed to each run's
-async call-tree (via `runWithCostTracker`), **not** a module global — so two concurrent runs (two
-browser tabs, or compare-arms running both arms) each see their own tracker and never clobber each
-other's spend. Every structured-output LLM call checks the cap before executing and records its *exact*
-cost (from the call's real `usage`) after — no pre-call cost estimation. Because the graph fans out
-~20 committee calls at once, a single fan-out wave can overshoot the cap by up to one super-step's
-spend before any call settles; the next `check()` then halts the run. We accept that bounded, fully
-accounted overshoot rather than reserve against a guessed pre-call cost. If the cap is hit mid-run, a
-`BudgetExceededError` is caught — the run immediately synthesizes a partial report from whatever
-state has accumulated, writes the trace, and returns results to the UI.
+async call-tree (via `runWithCostTracker`), **not** a module global — so concurrent runs (browser
+tabs, or compare-arms running all three arms) each see their own tracker and never clobber each
+other's spend. Every gated LLM call checks the cap before executing and records its *exact* cost
+(from the call's real `usage`) after — no pre-call cost estimation. In the **agentic** arm the check
+runs *inside* each researcher's tool-loop (before every model step), because one super-step can bill a
+whole Haiku swarm; a thrown `BudgetExceededError` rejects the pass and propagates to the same degrade
+path. Because the graph fans out ~20 committee calls at once, a single fan-out wave can overshoot the
+cap by up to one super-step's spend before any call settles; the next `check()` then halts the run.
+We accept that bounded, fully accounted overshoot rather than reserve against a guessed pre-call cost.
+If the cap is hit mid-run, a `BudgetExceededError` is caught — the run immediately synthesizes a
+partial report from whatever state has accumulated, writes the trace, and returns results. The final
+objective-level answer is **exempt** from the cap (it records cost but never gates), so the deliverable
+always completes even on a run that otherwise blew its budget.
 
 **Token efficiency** — both sides of the bill are engineered down (see "Token efficiency & loop
 control" above for the full mechanism list). In short:
@@ -339,8 +434,16 @@ control" above for the full mechanism list). In short:
   response would otherwise crash the run).
 - **Per-loop work**: re-debates run on Haiku (L4) and only touch questions with fresh evidence (L1).
 
-Hard stops: `MAX_LOOP_ITERATIONS` (5), Firecrawl budget exhaustion, LLM cost cap, or a zero-progress
-loop — whichever hits first.
+**Stopping conditions** — layered and code-enforced, so no phase runs away on time or money:
+- *Outer retrieval loop*: `MAX_LOOP_ITERATIONS` (5), Firecrawl budget exhaustion, the LLM cost cap, or
+  a zero-progress loop (`newEvidenceCount === 0` → `gateShortCircuit` no-progress) — plus the
+  `routeAfterGate` `budgetRemaining > 0` guard. Whichever hits first.
+- *Debate loop*: round-0 consensus fast-path, movement-based early stop (a round that moves no
+  position is terminal), or the `MAX_DEBATE_ROUNDS` cap.
+- *Each researcher agent* (agentic arm): `MAX_AGENT_STEPS`, the shared `PassPool` exhausting, the
+  interior cost check throwing, or the model deciding it has enough — subject to the loop-0
+  `RECON_FLOOR` minimum (which re-drives an early stop once but is itself bounded by the three above,
+  so a source-less question never deadlocks).
 
 ### Real-time visualization
 
@@ -422,8 +525,8 @@ src/
     research-events.ts            ResearchEvent union type (SSE wire protocol)
     useResearchStream.ts          client hook + pure reducer for orchestrated research SSE
     schemas/
-      state.ts                    ResearchState (Annotation) + Question + debateTranscripts channel
-      evidence.ts                 Evidence zod schema
+      state.ts                    ResearchState (Annotation) + Question + debateTranscripts + retrievalMode channel
+      evidence.ts                 Evidence zod schema (+ optional questionId for identity scoping)
       claim.ts                    Claim + DebateResponse/DebateTurnOutput schemas + AgentRole enum
     models/
       provider.ts                 model assignments per agent role
@@ -431,15 +534,17 @@ src/
       firecrawl.ts                search() + explore() — Firecrawl search/scrape
       store.ts                    in-memory Evidence store + contentHash
     orchestration/
-      graph.ts                    StateGraph (decompose→retrieve→digest→debate→gate→refine→recommend)
-      graph-stream.ts             runGraphStreaming() — streams ResearchEvents from graph nodes
+      graph.ts                    StateGraph (decompose→retrieve→debate→gate→recommend); retrieve dispatches on
+                                  retrievalMode (coded body vs retrieveAgentic); missionForQuestion; runGraph()
+      researcher.ts               agentic retrieve: runResearcher() (Haiku tool-loop) + PassPool + webSearch/readSource tools
+      graph-stream.ts             runGraphStreaming() — streams ResearchEvents from graph nodes (coded arm)
       committee.ts                runCommittee() (blind opening) + runDebate() (full debate) + message builders
       debate.ts                   debate types + pure logic (consensus, movement, contentions, transcript)
       digest.ts                   per-question Haiku evidence digest (L2) + prompt/clamp/format helpers
       gate.ts                     allocateBudget() + gateShortCircuit() + contention routing — LLM gate + clamps
       limiter.ts                  createLimiter() — per-model + Firecrawl FIFO concurrency caps (L6)
       cost-tracker.ts             per-run USD cost cap via AsyncLocalStorage (runWithCostTracker)
-      eval.ts                     ArmResult types + runBaseline() + toAnnotatedUsage() token tracking
+      eval.ts                     ArmResult + ComparisonResult (arms[]) + runBaseline() + toAnnotatedUsage() token tracking
       trace.ts                    TraceLogger — exhaustive run trace (prompts, responses, state)
     triage.ts                     intent adaptation + triage scoring + selection
     analyze.ts                    analysis prompt + LLM call + report assembly
@@ -467,8 +572,8 @@ src/
       ResearchReportView.tsx      final research report display
     ScanInput.tsx, ScanProgress.tsx, ReportView.tsx, Gauge.tsx, ...
 scripts/
-  compare-arms.ts                 A/B comparison harness (accepts --budget)
-  run-arm.ts                      single-arm runner (baseline or orchestrated, accepts --budget)
+  compare-arms.ts                 A/B/C comparison harness — baseline + orchestrated + agentic (accepts --budget)
+  run-arm.ts                      single-arm runner (baseline | orchestrated | agentic, accepts --budget)
   supabase-smoke.ts               live (free) round-trip check of the Supabase cache
   migrate-caches.mjs              one-time seed of Supabase from the legacy data/*.json files
 supabase/
@@ -484,15 +589,25 @@ data/
 
 ## Testing
 
+Zero-cost checks (no API credits — run these to confirm the build):
+
 ```bash
-npx tsc --noEmit       # typecheck (zero-cost)
-npx vitest run         # unit tests (zero-cost)
+npx tsc --noEmit       # typecheck
+npx vitest run         # unit tests (287 green)
 npm run smoke:supabase # verify the Supabase cache round-trips (live but free)
-npm run dev            # dev server at http://localhost:3000
-npm run compare -- "freight brokerage"   # A/B comparison
-npx tsx scripts/run-arm.ts orchestrated "freight brokerage"  # single arm
-npx tsx scripts/run-arm.ts baseline "topic" --budget=50      # budget override (use --budget=N, not a space)
 ```
+
+Paid / live runs (spend API credits — the real functional check of the pipeline):
+
+```bash
+npm run dev                                     # dev server at http://localhost:3000 (coded arm in the UI)
+npm run run-arm agentic "freight brokerage"     # one arm: baseline | orchestrated | agentic
+npm run run-arm agentic "freight brokerage" --budget=50   # Firecrawl-budget override (--budget=N, not a space)
+npm run compare -- "freight brokerage"          # all three arms → compare-output/<topic>-<ts>.json
+```
+
+The agentic-vs-orchestrated `compare` run is the end-to-end functional + cost/quality check for the
+agentic-retrieval migration; a run writes a full trace to `trace-output/` for inspection.
 
 ---
 
@@ -519,4 +634,4 @@ the project's **Exposed schemas** first (see `supabase/schema.sql`).
 - PDF URLs filtered before triage — they burn credits for content rarely better than the snippet.
 - Each scrape uses `onlyMainContent: true`, truncated to `MAX_CHARS_PER_PAGE` chars.
 - Blocked domains (401/403/429/451) are auto-added to the blocklist for future scans.
-- Firecrawl credits tracked per-call: 1/search, 2/scrape. Shown in the report.
+- Firecrawl credits tracked per-call: **2/search, 1/scrape** (cache hits = 0). Shown in the report.

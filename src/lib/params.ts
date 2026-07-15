@@ -63,6 +63,20 @@ export const RESULTS_PER_QUESTION  = 6;
 export const RECON_RESULTS_PER_QUESTION = 3;
 export const SEARCH_CANDIDATES_PER_QUESTION = 10;
 
+/**
+ * Results scraped per query for a given outer loop (layer 2): shallow RECONNAISSANCE on loop 0
+ * (RECON_RESULTS_PER_QUESTION), full depth (RESULTS_PER_QUESTION) on every later, gap-targeted pass.
+ * Loop 0 doesn't yet know what's missing, so each page buys generic coverage — scrape just enough to
+ * seed grounded round-0 claims and let the committee name its gaps; once a gap is named, the targeted
+ * passes go deep where the marginal value is high. See RECON_RESULTS_PER_QUESTION for the grounding floor.
+ *
+ * Lives here (not in graph.ts) so the agentic researcher can import it for its per-pass evidence
+ * CEILING without a circular import (graph.ts → researcher.ts); graph.ts re-exports it for callers.
+ */
+export function resultsPerQuestionForLoop(loopIteration: number): number {
+  return loopIteration === 0 ? RECON_RESULTS_PER_QUESTION : RESULTS_PER_QUESTION;
+}
+
 // Relevance triage (orchestrated retrieve): one cheap gpt-4o-mini call scores every deduped search
 // candidate 0–10 for relevance BEFORE scraping, so off-topic hits (a bad query's marketing/biotech
 // junk) are dropped instead of scraped and fed to the committee. TRIAGE_ENABLED=false falls back to

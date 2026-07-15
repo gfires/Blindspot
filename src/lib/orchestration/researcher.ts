@@ -39,7 +39,7 @@ import {
   WEBSEARCH_TOOL_DESCRIPTION,
   READSOURCE_TOOL_DESCRIPTION,
 } from "../prompts";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES, resultsPerQuestionForLoop } from "../params";
 
 /**
  * A FCFS Firecrawl-credit pool shared across all of a pass's concurrent researcher agents.
@@ -114,6 +114,9 @@ const SEARCH_CAP_MESSAGE =
   "You have used your one web search for this pass. Do NOT search again — read the most relevant of " +
   "the hits you already have (readSource), then finish. If the evidence is still thin, that is fine: " +
   "the research loop will run another, sharper search on the next pass.";
+const READ_CEILING_MESSAGE =
+  "You have read enough sources for this pass — stop reading and finish. Any further sources this pass " +
+  "are dropped; the research loop will read more on the next pass if a gap remains.";
 
 /**
  * Run ONE researcher agent for `question` on this pass. `mission` (the user message) says what to
@@ -124,6 +127,11 @@ const SEARCH_CAP_MESSAGE =
  * @param seenUrls       urls already gathered (this loop or by prior loops) — seeds the per-agent
  *                       read-set so the agent never re-scrapes what the run already holds.
  * @param passPool       the shared FCFS credit pool for this pass.
+ * @param opts.maxReads  per-pass evidence CEILING — the max sources this agent may STORE. Defaults to
+ *                       `resultsPerQuestionForLoop(loopIteration)` (3 on recon, 6 on gap passes), the
+ *                       coded arm's exact per-pass depth, so the committee sees the SAME evidence
+ *                       VOLUME as the coded arm (eval parity — the arms differ in source QUALITY, not
+ *                       count). A hard stop: once stored count hits it, readSource stores nothing more.
  */
 export async function runResearcher(
   question: Question,
@@ -131,11 +139,14 @@ export async function runResearcher(
   loopIteration: number,
   seenUrls: Set<string>,
   passPool: PassPool,
-  opts?: { model?: LanguageModel; firecrawl?: FirecrawlApp },
+  opts?: { model?: LanguageModel; firecrawl?: FirecrawlApp; maxReads?: number },
 ): Promise<{ evidence: Evidence[]; usage: AnnotatedUsage }> {
   const model = opts?.model ?? researcherModel;
   const modelId = typeof model === "string" ? model : model.modelId;
   const firecrawl = opts?.firecrawl ?? makeFirecrawl();
+  // Per-pass evidence ceiling — default to the coded arm's per-pass depth so standalone/test callers
+  // get eval-parity volume automatically; the node passes it explicitly (belt-and-suspenders).
+  const maxReads = opts?.maxReads ?? resultsPerQuestionForLoop(loopIteration);
 
   // Per-agent closures the two tools mutate.
   const collected: Evidence[] = [];
@@ -180,8 +191,16 @@ export async function runResearcher(
     inputSchema: z.object({ urls: z.array(z.string()) }),
     execute: async ({ urls }) => {
       getActiveCostTracker()?.check(); // interior $-cap on every tool call
-      const memos: (SourceMemo | { url: string; note: string })[] = [];
+      const memos: (SourceMemo | { url?: string; note: string })[] = [];
+      let hitCeiling = false;
       for (const url of urls) {
+        // Per-pass evidence ceiling (eval parity): stop STORING once this pass's stored count reaches
+        // maxReads — same graceful partial-read break as pool exhaustion. The committee then sees the
+        // coded arm's per-pass VOLUME, so deliberation cost matches by construction. Hard stop in code.
+        if (collected.length >= maxReads) {
+          hitCeiling = true;
+          break;
+        }
         if (readUrls.has(url)) {
           memos.push({ url, note: "already gathered" });
           continue;
@@ -209,6 +228,8 @@ export async function runResearcher(
         });
         memos.push({ title: meta.title, url, head: content.slice(0, READSOURCE_HEAD_CHARS) });
       }
+      // At the ceiling: tell the model it has read enough this pass so it finishes instead of retrying.
+      if (hitCeiling) memos.push({ note: READ_CEILING_MESSAGE });
       getActiveTrace()?.log("researcher:readSource", {
         questionId: question.id,
         requested: urls.length,
@@ -220,8 +241,10 @@ export async function runResearcher(
   });
 
   // Recon floor: loop 0 is reconnaissance (a MINIMUM before the agent may finish); later loops
-  // target a named gap, so no floor. Enforced by re-driving the loop, never a deadlock.
-  const reconFloor = loopIteration === 0 ? RECON_FLOOR : 0;
+  // target a named gap, so no floor. Enforced by re-driving the loop, never a deadlock. Clamped to
+  // the ceiling so the floor can never exceed maxReads — on loop 0, RECON_FLOOR (3) == maxReads (3),
+  // so the agent reads EXACTLY 3 (floor == ceiling), matching the coded grounding depth.
+  const reconFloor = loopIteration === 0 ? Math.min(RECON_FLOOR, maxReads) : 0;
 
   const messages: ModelMessage[] = [{ role: "user", content: mission }];
   const acc = { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0 };

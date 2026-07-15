@@ -35,7 +35,11 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel, gateModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, estimateCostUsd } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, MAX_SEARCH_QUERIES_PER_QUESTION, RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
+import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, MAX_SEARCH_QUERIES_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES, resultsPerQuestionForLoop } from "../params";
+// Re-exported so existing importers (e.g. graph.test.ts) keep resolving it here. The function itself
+// lives in params.ts so researcher.ts can import it for its per-pass evidence ceiling without a
+// circular import back into graph.ts.
+export { resultsPerQuestionForLoop };
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 // Prompt wording lives in src/lib/prompts.ts; the nodes keep the state-shaping and pass the
@@ -131,17 +135,6 @@ export function questionsNeedingDebate(
     const scoped = evidenceByQuestion.get(q.id) ?? [];
     return scoped.some((e) => e.loopIteration === currentLoop);
   });
-}
-
-/**
- * Results scraped per query for a given outer loop (layer 2): shallow RECONNAISSANCE on loop 0
- * (RECON_RESULTS_PER_QUESTION), full depth (RESULTS_PER_QUESTION) on every later, gap-targeted pass.
- * Loop 0 doesn't yet know what's missing, so each page buys generic coverage — scrape just enough to
- * seed grounded round-0 claims and let the committee name its gaps; once a gap is named, the targeted
- * passes go deep where the marginal value is high. See RECON_RESULTS_PER_QUESTION for the grounding floor.
- */
-export function resultsPerQuestionForLoop(loopIteration: number): number {
-  return loopIteration === 0 ? RECON_RESULTS_PER_QUESTION : RESULTS_PER_QUESTION;
 }
 
 export function queriesToSearch(
@@ -406,7 +399,14 @@ export async function retrieveAgentic(
   // Concurrent agents draw FCFS from the one pool. A thrown BudgetExceededError (interior $-cap)
   // must propagate — do NOT wrap in try/catch: it rejects Promise.all → the degrade path.
   const results = await Promise.all(
-    withMission.map(({ q, mission }) => runResearcher(q, mission, state.loopIteration, seenUrls, passPool)),
+    // maxReads: cap each agent's stored evidence at the coded arm's exact per-pass depth, so the
+    // committee sees the SAME evidence VOLUME as the coded arm (belt-and-suspenders — runResearcher
+    // defaults to this same value; passing it explicitly documents the eval-parity invariant here).
+    withMission.map(({ q, mission }) =>
+      runResearcher(q, mission, state.loopIteration, seenUrls, passPool, {
+        maxReads: resultsPerQuestionForLoop(state.loopIteration),
+      }),
+    ),
   );
 
   // Dedupe across agents by contentHash (agents may surface the same page); node reconciles once.

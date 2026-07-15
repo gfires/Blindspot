@@ -66,7 +66,7 @@ vi.mock("@/lib/blocklist", async () => {
 import { generateText } from "ai";
 import { runResearcher, PassPool } from "@/lib/orchestration/researcher";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "@/lib/orchestration/cost-tracker";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID } from "@/lib/params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID, resultsPerQuestionForLoop } from "@/lib/params";
 import type { Question } from "@/lib/schemas/state";
 
 const q = (id: string): Question => ({
@@ -173,6 +173,58 @@ describe("runResearcher — loop >= 1 (no recon floor)", () => {
 
     expect(evidence.length).toBe(1);
     expect(evidence[0].loopIteration).toBe(1);
+  });
+});
+
+describe("runResearcher — per-pass evidence ceiling (eval parity)", () => {
+  it("caps stored evidence at resultsPerQuestionForLoop(0)=3 on loop 0; further reads store nothing + return the 'enough' note", async () => {
+    // Offer 5 urls in one read: the ceiling (3) stores only 3. A subsequent read, already at the cap,
+    // stores nothing and returns a short note telling the model it has read enough this pass.
+    const returns: unknown[] = [];
+    const probe: StepFn = async (tools) => {
+      await tools.readSource.execute(
+        { urls: ["https://ex.com/1", "https://ex.com/2", "https://ex.com/3", "https://ex.com/4", "https://ex.com/5"] },
+        ctx,
+      );
+      returns.push(await tools.readSource.execute({ urls: ["https://ex.com/6"] }, ctx)); // already capped
+      return true;
+    };
+    scriptModel([probe, stopStep]);
+
+    const { evidence } = await runResearcher(q("q1"), "recon", 0, new Set(), new PassPool(100));
+
+    expect(evidence.length).toBe(resultsPerQuestionForLoop(0)); // 3
+    const memos = returns[0] as Array<Record<string, unknown>>;
+    expect(memos.some((m) => "head" in m)).toBe(false); // nothing stored on the post-cap read
+    expect(JSON.stringify(memos)).toMatch(/enough|finish/i); // the 'enough' note
+  });
+
+  it("caps stored evidence at resultsPerQuestionForLoop(1)=6 on a gap pass (loop >= 1)", async () => {
+    const urls = Array.from({ length: 9 }, (_, i) => `https://ex.com/g${i}`);
+    scriptModel([readStep(urls), stopStep]);
+
+    const { evidence } = await runResearcher(q("q2"), "gap", 1, new Set(), new PassPool(100));
+
+    expect(evidence.length).toBe(resultsPerQuestionForLoop(1)); // 6
+  });
+
+  it("honors an explicit maxReads override via opts", async () => {
+    const urls = Array.from({ length: 5 }, (_, i) => `https://ex.com/o${i}`);
+    scriptModel([readStep(urls), stopStep]);
+
+    const { evidence } = await runResearcher(q("q3"), "m", 1, new Set(), new PassPool(100), { maxReads: 2 });
+
+    expect(evidence.length).toBe(2);
+  });
+
+  it("floor==ceiling on loop 0: 3 relevant reads satisfy the floor and stop without over-reading or endless nudging", async () => {
+    scriptModel([readStep(["https://ex.com/a", "https://ex.com/b", "https://ex.com/c"]), stopStep]);
+
+    const { evidence } = await runResearcher(q("q4"), "recon", 0, new Set(), new PassPool(100));
+
+    expect(evidence.length).toBe(3); // floor (3) met and ceiling (3) never exceeded
+    // Read step + the stop step only — no nudge, since the floor was already satisfied.
+    expect((generateText as Mock).mock.calls.length).toBe(2);
   });
 });
 

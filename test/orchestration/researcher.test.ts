@@ -64,7 +64,7 @@ vi.mock("@/lib/blocklist", async () => {
 });
 
 import { generateText } from "ai";
-import { runResearcher, PassPool } from "@/lib/orchestration/researcher";
+import { runResearcher, PassPool, type ResearcherProgress } from "@/lib/orchestration/researcher";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "@/lib/orchestration/cost-tracker";
 import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID, resultsPerQuestionForLoop } from "@/lib/params";
 import type { Question } from "@/lib/schemas/state";
@@ -291,6 +291,54 @@ describe("runResearcher — search cap (MAX_SEARCHES_PER_PASS)", () => {
     expect(returns[1] as string).toMatch(/one web search|read/i);
     expect(h.searchCalls).toBe(MAX_SEARCHES_PER_PASS);     // exactly the cap (1) hit the network
     expect(pool.spent).toBe(2);                            // only the one real search charged (2 credits)
+  });
+});
+
+describe("runResearcher — progress emit (window-shopping made observable)", () => {
+  it("emits begin → search(real) → search(capped) → read(ceiling) → done with the load-bearing flags", async () => {
+    // One real search (2 hits), a second that the cap refuses, then a 5-url read that stores only the
+    // loop-0 ceiling (3) and trips hitCeiling. The emit stream is the SSE the question-board renders.
+    const probe: StepFn = async (tools) => {
+      await tools.webSearch.execute({ query: "first" }, ctx); // real
+      await tools.webSearch.execute({ query: "second" }, ctx); // capped
+      await tools.readSource.execute(
+        { urls: ["https://a.com/1", "https://a.com/2", "https://a.com/3", "https://a.com/4", "https://a.com/5"] },
+        ctx,
+      );
+      return true;
+    };
+    scriptModel([probe, stopStep]);
+
+    const emitted: ResearcherProgress[] = [];
+    const { evidence } = await runResearcher(q("q1"), "my mission", 0, new Set(), new PassPool(100), {
+      emit: (p) => emitted.push(p),
+    });
+
+    // begin brackets the pass and carries the mission the agent was handed.
+    expect(emitted[0]).toEqual({ kind: "begin", questionId: "q1", loopIteration: 0, mission: "my mission" });
+    // done closes it with the honest tallies: 3 sources stored, exactly 1 billable search.
+    expect(emitted[emitted.length - 1]).toEqual({
+      kind: "done",
+      questionId: "q1",
+      loopIteration: 0,
+      evidenceCount: evidence.length,
+      searchCalls: MAX_SEARCHES_PER_PASS,
+    });
+
+    const searches = emitted.filter((e): e is Extract<ResearcherProgress, { kind: "search" }> => e.kind === "search");
+    expect(searches).toHaveLength(2);
+    expect(searches[0]).toMatchObject({ query: "first", hits: 2, capped: false }); // real: surfaced hits
+    expect(searches[1]).toMatchObject({ query: "second", hits: 0, capped: true }); // refused: the fix, visible
+
+    const reads = emitted.filter((e): e is Extract<ResearcherProgress, { kind: "read" }> => e.kind === "read");
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toMatchObject({ stored: resultsPerQuestionForLoop(0), requested: 5, hitCeiling: true });
+  });
+
+  it("does not throw when no emit callback is supplied (emit is optional)", async () => {
+    scriptModel([webSearchStep(), readStep(["https://x.com/1"]), stopStep]);
+    const { evidence } = await runResearcher(q("q2"), "m", 1, new Set(), new PassPool(100));
+    expect(evidence.length).toBe(1);
   });
 });
 

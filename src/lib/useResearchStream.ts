@@ -208,6 +208,45 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ],
       };
 
+    // Agentic researcher lifecycle. For now these drive the raw trace feed (a live window-shopping
+    // narrative); the per-question board (spec phase) will consume the same events into lanes.
+    case "researcher:begin":
+      return {
+        ...state,
+        phase,
+        activeNode: "retrieve",
+        trace: [...state.trace, `$ researcher on ${ev.questionId} (loop ${ev.loopIteration}): ${ev.mission.slice(0, 80)}`],
+      };
+
+    case "researcher:search":
+      return {
+        ...state,
+        phase,
+        trace: [
+          ...state.trace,
+          ev.capped
+            ? `$   search capped — committing to read (wanted "${ev.query.slice(0, 60)}")`
+            : `$   searched "${ev.query.slice(0, 60)}" — ${ev.hits} hits`,
+        ],
+      };
+
+    case "researcher:read":
+      return {
+        ...state,
+        phase,
+        trace: [
+          ...state.trace,
+          `$   read ${ev.stored}/${ev.requested} sources${ev.hitCeiling ? " (ceiling — enough this pass)" : ""}`,
+        ],
+      };
+
+    case "researcher:done":
+      return {
+        ...state,
+        phase,
+        trace: [...state.trace, `$ researcher ${ev.questionId} done: ${ev.evidenceCount} sources, ${ev.searchCalls} search(es)`],
+      };
+
     case "debate:begin":
       return {
         ...state,

@@ -82,6 +82,21 @@ export class PassPool {
   }
 }
 
+/**
+ * Live per-agent progress for the SSE stream — the researcher's window-shopping made observable.
+ * runResearcher emits these as it works; graph.ts forwards them to the LangGraph custom writer and
+ * graph-stream.ts translates each into a `researcher:*` ResearchEvent. The load-bearing flags are
+ * `capped` (the agent tried a second search and the 1/pass cap refused it — stop shopping, start
+ * reading) and `hitCeiling` (it read up to the per-pass evidence ceiling and stopped). Kept as a
+ * domain type here (not the wire ResearchEvent) so this module stays unaware of the SSE protocol —
+ * exactly how firecrawl.ts's SearchProgress is translated by the stream layer.
+ */
+export type ResearcherProgress =
+  | { kind: "begin"; questionId: string; loopIteration: number; mission: string }
+  | { kind: "search"; questionId: string; loopIteration: number; query: string; hits: number; credits: number; capped: boolean }
+  | { kind: "read"; questionId: string; loopIteration: number; stored: number; requested: number; hitCeiling: boolean }
+  | { kind: "done"; questionId: string; loopIteration: number; evidenceCount: number; searchCalls: number };
+
 /** Metadata carried from a search hit onto the Evidence it becomes when read. */
 interface HitMeta {
   title: string;
@@ -139,7 +154,7 @@ export async function runResearcher(
   loopIteration: number,
   seenUrls: Set<string>,
   passPool: PassPool,
-  opts?: { model?: LanguageModel; firecrawl?: FirecrawlApp; maxReads?: number },
+  opts?: { model?: LanguageModel; firecrawl?: FirecrawlApp; maxReads?: number; emit?: (p: ResearcherProgress) => void },
 ): Promise<{ evidence: Evidence[]; usage: AnnotatedUsage }> {
   const model = opts?.model ?? researcherModel;
   const modelId = typeof model === "string" ? model : model.modelId;
@@ -147,6 +162,9 @@ export async function runResearcher(
   // Per-pass evidence ceiling — default to the coded arm's per-pass depth so standalone/test callers
   // get eval-parity volume automatically; the node passes it explicitly (belt-and-suspenders).
   const maxReads = opts?.maxReads ?? resultsPerQuestionForLoop(loopIteration);
+  // Live SSE progress (optional — off in tests/standalone unless a callback is supplied).
+  const emit = opts?.emit;
+  emit?.({ kind: "begin", questionId: question.id, loopIteration, mission });
 
   // Per-agent closures the two tools mutate.
   const collected: Evidence[] = [];
@@ -163,12 +181,18 @@ export async function runResearcher(
       // Search cap (the coded arm's fixed 1-query-per-question discipline): once used, refuse further
       // searches so the agent commits to READING its hits instead of running a query-refinement
       // treadmill. Enforced in code — the prompt is only a hint. Charges nothing, hits no network.
-      if (searchCount >= MAX_SEARCHES_PER_PASS) return SEARCH_CAP_MESSAGE;
+      if (searchCount >= MAX_SEARCHES_PER_PASS) {
+        // The window-shopping cap in action: surface the refused query so the UI can show the agent
+        // being told to stop shopping and start reading. Charges nothing, hits no network.
+        emit?.({ kind: "search", questionId: question.id, loopIteration, query, hits: 0, credits: 0, capped: true });
+        return SEARCH_CAP_MESSAGE;
+      }
       if (passPool.exhausted) return BUDGET_EXHAUSTED_MESSAGE; // graceful, NOT a throw
       searchCount += 1;
       if (firstQuery === undefined) firstQuery = query;
       const { hits, credits } = await webSearchRaw(query, firecrawl);
       passPool.charge(credits);
+      emit?.({ kind: "search", questionId: question.id, loopIteration, query, hits: hits.length, credits, capped: false });
       for (const h of hits) {
         // first-wins: the query that FIRST surfaced a url owns its sourceQuery tag.
         if (!searchHits.has(h.url)) {
@@ -230,6 +254,14 @@ export async function runResearcher(
       }
       // At the ceiling: tell the model it has read enough this pass so it finishes instead of retrying.
       if (hitCeiling) memos.push({ note: READ_CEILING_MESSAGE });
+      emit?.({
+        kind: "read",
+        questionId: question.id,
+        loopIteration,
+        stored: memos.filter((m) => "head" in m).length,
+        requested: urls.length,
+        hitCeiling,
+      });
       getActiveTrace()?.log("researcher:readSource", {
         questionId: question.id,
         requested: urls.length,
@@ -312,5 +344,7 @@ export async function runResearcher(
     }),
   };
 
-  return { evidence: dedupeByContentHash(collected), usage };
+  const evidence = dedupeByContentHash(collected);
+  emit?.({ kind: "done", questionId: question.id, loopIteration, evidenceCount: evidence.length, searchCalls: searchCount });
+  return { evidence, usage };
 }

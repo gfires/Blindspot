@@ -57,7 +57,7 @@ import { computeRunMechanics } from "./mechanics";
 // researcher.ts (P3): one bounded Haiku researcher agent per unresolved question, drawing from a
 // shared FCFS pass-budget pool. The agentic `retrieve` body drives these; the pool is the sole
 // per-pass credit accountant the node reconciles into the single budget delta.
-import { runResearcher, PassPool } from "./researcher";
+import { runResearcher, PassPool, type ResearcherProgress } from "./researcher";
 // digest.ts: compress each question's fresh evidence with a cheap Haiku pass (L2).
 import { digestEvidence, type DigestItem } from "./digest";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
@@ -377,7 +377,7 @@ export function missionForQuestion(state: ResearchStateT, q: Question): string {
  */
 export async function retrieveAgentic(
   state: ResearchStateT,
-  _config?: LangGraphRunnableConfig,
+  config?: LangGraphRunnableConfig,
 ): Promise<Partial<ResearchStateT>> {
   const questions = unresolved(state);
   // newEvidenceCount on EVERY return path (invariant 7) — an early return adds no evidence → 0.
@@ -399,6 +399,14 @@ export async function retrieveAgentic(
   const passPool = new PassPool(seed);
   const seenUrls = new Set(state.evidence.map((e) => e.url));
 
+  // Live per-agent progress → the LangGraph custom writer (graph-stream.ts translates each into a
+  // `researcher:*` SSE event). Absent under graph.invoke (no writer) → agents run silently. Multiple
+  // agents share one writer; every payload is tagged questionId so the UI demuxes into per-question lanes.
+  const writer = config?.writer;
+  const emit = writer
+    ? (p: ResearcherProgress) => writer({ node: "researcher", researcher: p })
+    : undefined;
+
   // Concurrent agents draw FCFS from the one pool. A thrown BudgetExceededError (interior $-cap)
   // must propagate — do NOT wrap in try/catch: it rejects Promise.all → the degrade path.
   const results = await Promise.all(
@@ -408,6 +416,7 @@ export async function retrieveAgentic(
     withMission.map(({ q, mission }) =>
       runResearcher(q, mission, state.loopIteration, seenUrls, passPool, {
         maxReads: resultsPerQuestionForLoop(state.loopIteration),
+        emit,
       }),
     ),
   );

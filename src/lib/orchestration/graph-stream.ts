@@ -15,6 +15,7 @@ import type { Evidence } from "../schemas/evidence";
 import type { SearchProgress } from "../evidence/firecrawl";
 import type { Claim } from "../schemas/claim";
 import type { DigestItem } from "./digest";
+import type { ResearcherProgress } from "./researcher";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
 import { TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
@@ -105,7 +106,28 @@ async function runGraphStreamingInner(
       const [mode, payload] = chunk;
 
       if (mode === "custom") {
-        const custom = payload as { node?: string; progress?: SearchProgress };
+        const custom = payload as { node?: string; progress?: SearchProgress; researcher?: ResearcherProgress };
+        // Agentic arm: per-question researcher-agent progress → `researcher:*` SSE events. The domain
+        // ResearcherProgress kinds map 1:1 onto the wire events (kind → `researcher:<kind>`); the
+        // explicit switch keeps the payloads type-checked rather than casting the union.
+        if (custom?.node === "researcher" && custom.researcher) {
+          const r = custom.researcher;
+          switch (r.kind) {
+            case "begin":
+              send({ type: "researcher:begin", questionId: r.questionId, loopIteration: r.loopIteration, mission: r.mission });
+              break;
+            case "search":
+              send({ type: "researcher:search", questionId: r.questionId, loopIteration: r.loopIteration, query: r.query, hits: r.hits, credits: r.credits, capped: r.capped });
+              break;
+            case "read":
+              send({ type: "researcher:read", questionId: r.questionId, loopIteration: r.loopIteration, stored: r.stored, requested: r.requested, hitCeiling: r.hitCeiling });
+              break;
+            case "done":
+              send({ type: "researcher:done", questionId: r.questionId, loopIteration: r.loopIteration, evidenceCount: r.evidenceCount, searchCalls: r.searchCalls });
+              break;
+          }
+          continue;
+        }
         if (custom?.node === "retrieve" && custom.progress) {
           const p = custom.progress;
           send(

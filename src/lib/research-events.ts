@@ -22,6 +22,13 @@ export type ResearchEvent =
   | { type: "retrieve:progress"; loopIteration: number; kind: "search" | "scrape"; message: string }
   | { type: "retrieve:evidence"; evidence: Evidence; questionId: string }
   | { type: "retrieve:done"; loopIteration: number; evidenceCount: number; firecrawlCalls: number }
+  // Per-question researcher-agent lifecycle (agentic arm only) — the window-shopping story live:
+  // `search.capped` = the 1/pass cap refused a reformulation; `read.hitCeiling` = read up to the
+  // per-pass evidence ceiling and stopped. Emitted by runResearcher, forwarded via the custom writer.
+  | { type: "researcher:begin"; questionId: string; loopIteration: number; mission: string }
+  | { type: "researcher:search"; questionId: string; loopIteration: number; query: string; hits: number; credits: number; capped: boolean }
+  | { type: "researcher:read"; questionId: string; loopIteration: number; stored: number; requested: number; hitCeiling: boolean }
+  | { type: "researcher:done"; questionId: string; loopIteration: number; evidenceCount: number; searchCalls: number }
   | { type: "debate:begin"; loopIteration: number; questionIds: string[] }
   | { type: "debate:digest"; questionId: string; loopIteration: number; evidenceCount: number; usage: AnnotatedUsage }
   | { type: "debate:claim"; claim: Claim }
@@ -50,6 +57,10 @@ export function researchPhaseFor(type: ResearchEvent["type"]): ResearchPhase {
     case "retrieve:progress":
     case "retrieve:evidence":
     case "retrieve:done":
+    case "researcher:begin":
+    case "researcher:search":
+    case "researcher:read":
+    case "researcher:done":
       return "retrieve";
     case "debate:begin":
     case "debate:digest":

@@ -9,6 +9,7 @@ import {
 } from "./graph";
 import { rollupTokens } from "./eval";
 import type { ArmResult } from "./eval";
+import { computeRunMechanics } from "./mechanics";
 import type { ResearchStateT, Question } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
 import type { SearchProgress } from "../evidence/firecrawl";
@@ -331,14 +332,16 @@ async function runGraphStreamingInner(
   // double-counting the answer. Fall back to allLlmCalls only if no tracker is active.
   const tracker = getActiveCostTracker();
   const rollupUsages = tracker ? tracker.getUsages() : allLlmCalls;
+  const tokens = rollupTokens(rollupUsages);
   const result = {
     arm: "orchestrated" as const,
     topic,
     report,
-    tokens: rollupTokens(rollupUsages),
+    tokens,
     firecrawlCalls: totalFirecrawlCalls,
     firecrawlCredits: totalFirecrawlCredits,
     durationMs: Date.now() - t0,
+    mechanics: computeRunMechanics(trace.getEntries(), finalState, tokens),
   };
 
   await writeTrace();

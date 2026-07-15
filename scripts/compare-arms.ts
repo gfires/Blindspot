@@ -27,6 +27,7 @@ if (existsSync(envPath)) {
 
 import { runBaseline } from "../src/lib/orchestration/eval";
 import type { ArmResult, ComparisonResult } from "../src/lib/orchestration/eval";
+import { formatMechanicsReport } from "../src/lib/orchestration/mechanics";
 
 const cliArgs = process.argv.slice(2);
 const budgetFlag = cliArgs.find((a) => a.startsWith("--budget="));
@@ -85,6 +86,8 @@ function logArmDone(arm: ArmResult, ms: number): void {
       `${arm.tokens.totalPromptTokens.toLocaleString()} in / ` +
       `${arm.tokens.totalCompletionTokens.toLocaleString()} out tokens`,
   );
+  // Graph arms carry a mechanics report; the baseline arm does not.
+  if (arm.mechanics) console.log("\n" + formatMechanicsReport(arm.mechanics) + "\n");
 }
 
 async function main() {

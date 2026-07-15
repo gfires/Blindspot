@@ -24,6 +24,7 @@ if (existsSync(envPath)) {
 
 import { runBaseline } from "../src/lib/orchestration/eval";
 import type { ArmResult } from "../src/lib/orchestration/eval";
+import { formatMechanicsReport } from "../src/lib/orchestration/mechanics";
 
 const cliArgs = process.argv.slice(2);
 const budgetFlag = cliArgs.find((a) => a.startsWith("--budget="));
@@ -83,6 +84,8 @@ async function main() {
       `${result.tokens.totalCompletionTokens.toLocaleString()} out tokens — ` +
       `${result.firecrawlCalls} firecrawl calls / ${result.firecrawlCredits} credits`,
   );
+
+  if (result.mechanics) console.log("\n" + formatMechanicsReport(result.mechanics));
 
   // Cap the slug so a long free-form topic (an intake thesis can be a full paragraph) can't
   // blow past the filesystem's per-name limit (ENAMETOOLONG). The timestamp keeps it unique.

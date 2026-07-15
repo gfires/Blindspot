@@ -15,6 +15,9 @@ import { normalizeIndustry } from "../intents";
 import type { ScanReport } from "../schema";
 import type { ResearchReport } from "./graph";
 import type { ScanEvent, TokenUsage } from "../events";
+import type { RunMechanics } from "./mechanics";
+
+export type { RunMechanics } from "./mechanics";
 
 /**
  * Cost per million tokens by model (USD). Update when model pricing changes.
@@ -159,6 +162,8 @@ export interface ArmResult {
   firecrawlCalls: number;
   firecrawlCredits: number;
   durationMs: number;
+  /** Mechanical run report (retrieval/debate/effort-split/convergence). Absent on the baseline arm. */
+  mechanics?: RunMechanics;
 }
 
 /** Side-by-side comparison written to the output JSON file. */

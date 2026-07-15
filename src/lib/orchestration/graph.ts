@@ -53,6 +53,7 @@ import { search } from "../evidence/firecrawl";
 // transcript. (committee derives the loop iteration from the evidence's own loopIteration.)
 import { runDebate, splitEvidence } from "./committee";
 import { extractContentions, type DebateRound } from "./debate";
+import { computeRunMechanics } from "./mechanics";
 // researcher.ts (P3): one bounded Haiku researcher agent per unresolved question, drawing from a
 // shared FCFS pass-budget pool. The agentic `retrieve` body drives these; the pool is the sole
 // per-pass credit accountant the node reconciles into the single budget delta.
@@ -482,6 +483,10 @@ async function retrieveCoded(
     const annotated: AnnotatedUsage = { ...triageUsage, label: "triage", costUsd: estimateCostUsd(triageUsage) };
     getActiveCostTracker()?.record(annotated);
     llmCalls.push(annotated);
+    // Emit an llm:call trace entry too (search() records the cost but doesn't log the call), so the
+    // mechanics harness's effort split counts triage in the retrieval bucket — otherwise the coded
+    // arm's split sums below its headline cost.
+    getActiveTrace()?.logLlmCall("triage", { model: triageUsage.model, prompt: "(triage: relevance scoring inside search)", loopIteration: state.loopIteration }, undefined, triageUsage);
   }
   // budgetRemaining/budgetSpent reducers are ADDITIVE — return signed deltas, not
   // absolutes. Spending `totalCredits` credits: remaining goes down, spent goes up.
@@ -999,14 +1004,19 @@ async function runGraphInner(
     // tracker is active (never happens under runWithCostTracker, but keeps this total-safe).
     const tracker = getActiveCostTracker();
     const usages = tracker ? tracker.getUsages() : [...finalState.llmCalls, ...answerUsage];
+    const tokens = rollupTokens(usages);
+    // Mechanical run report over the trace + final state — computed BEFORE trace.writeToDisk, so
+    // the degrade entries (budget_exceeded / recursion_limit) logged above are already present.
+    const mechanics = computeRunMechanics(trace.getEntries(), finalState, tokens);
     return {
       arm,
       topic,
       report,
-      tokens: rollupTokens(usages),
+      tokens,
       firecrawlCalls: finalState.firecrawlCalls,
       firecrawlCredits: finalState.firecrawlCredits,
       durationMs: Date.now() - t0,
+      mechanics,
     };
   } finally {
     // Always write the trace — even when the run threw — so failures are debuggable.

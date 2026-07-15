@@ -587,3 +587,73 @@ export async function search(
 
   return { evidence, searchCredits, scrapeCredits, triageUsage };
 }
+
+/**
+ * Snippet-only web search for the researcher agent's `webSearch` tool (P3). Returns the raw
+ * search hits WITHOUT scraping any page — the agent decides what to read via `scrapeOneCached`.
+ *
+ * Credit accounting mirrors `search()`'s exactly: a live (cache-miss) query bills 2 REAL Firecrawl
+ * credits, and Firecrawl charges for the request whether it succeeds or throws — so we report
+ * `credits: 2` even on error (the live attempt was made). A cache hit costs 0. Never throws.
+ *
+ * `app` is injectable (default `makeFirecrawl()`) mirroring the injected clock elsewhere in this
+ * module, so tests can supply a stub client without module-mocking the SDK.
+ */
+export async function webSearchRaw(
+  query: string,
+  app: FirecrawlApp = makeFirecrawl(),
+): Promise<{ hits: { title: string; url: string; snippet: string }[]; credits: number }> {
+  const cached = await getSearchCache(query);
+  if (cached) {
+    getActiveTrace()?.logFirecrawlCall("search-cache-hit", { query }, cached.length);
+    return {
+      hits: cached.map((d) => ({ title: d.title, url: d.url, snippet: d.snippet })),
+      credits: 0,
+    };
+  }
+
+  try {
+    const res = await firecrawlLimiter(() => app.search(query, { limit: SEARCH_CANDIDATES_PER_QUESTION }));
+    const hits = (res.data ?? [])
+      .filter((d) => d.url)
+      .map((d) => ({
+        url: d.url as string,
+        title: d.metadata?.title || d.title || domainOf(d.url as string),
+        snippet: d.description || d.metadata?.description || "",
+      }));
+    getActiveTrace()?.logFirecrawlCall("search", { query, limit: SEARCH_CANDIDATES_PER_QUESTION }, hits.length);
+    void setSearchCache(query, hits);
+    return { hits, credits: 2 };
+  } catch {
+    // Firecrawl billed the request even though it failed — report the live credit, no hits.
+    return { hits: [], credits: 2 };
+  }
+}
+
+/**
+ * Scrape a single URL for the researcher agent's `readSource` tool (P3), cache-aware and reporting
+ * REAL post-cache credits. Delegates to the private `scrapeOne` helper (blocklist skip, PDF skip,
+ * cache hit, timeout, `setCache`, errors → empty content — all handled there; never throws).
+ *
+ * Credit accounting replicates `scrapeSources()`'s `isLive` rule exactly:
+ *   `isLive = !blocked && !isPdf && (await getCache(url)) === null`  → 1 credit; otherwise 0.
+ * So a cache hit, a PDF, a blocklisted domain, or any skip costs 0; only a genuine live scrape
+ * bills 1 credit. `content` is the full scraped page (already truncated to MAX_CHARS_PER_PAGE).
+ */
+export async function scrapeOneCached(
+  url: string,
+  app: FirecrawlApp = makeFirecrawl(),
+): Promise<{ url: string; domain: string; content: string; credits: number }> {
+  const domain = domainOf(url);
+  const src: Source = { id: 0, url, domain, title: domain, intent: "" };
+  const blockset = await loadBlocklist();
+  const blocked = blockset.has(blocklistKey(domain));
+
+  // Determine liveness BEFORE scraping (scrapeOne populates the cache on success, which would
+  // otherwise flip this to a false cache-hit). Mirrors scrapeSources()'s exact rule.
+  const isPdf = /\.pdf(\?|#|$)/i.test(url);
+  const isLive = !blocked && !isPdf && (await getCache(url)) === null;
+
+  const scraped = await scrapeOne(app, src, blocked, () => {}, () => Date.now(), new Date().toISOString());
+  return { url, domain, content: scraped.content, credits: isLive ? 1 : 0 };
+}

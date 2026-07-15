@@ -259,7 +259,7 @@ export async function runResearcher(
     const res = await limiterForModel(modelId)(() =>
       generateText({
         model,
-        system: researcherSystemPrompt(question),
+        system: researcherSystemPrompt(question, new Date().getFullYear()),
         messages,
         tools: { webSearch, readSource },
         stopWhen: [stepCountIs(1)], // one model step per generateText → check() gates every step

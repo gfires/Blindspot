@@ -86,6 +86,14 @@ describe("decompose (objective-driven)", () => {
     );
   });
 
+  it("injects the current year so recency-sensitive queries target it, not a training-cutoff year", async () => {
+    mockQuestions(2);
+    await decompose(stateOf(fallbackBrief("freight brokerage software")));
+    const year = String(new Date().getFullYear());
+    expect(lastPrompt()).toContain(`The current year is ${year}`);
+    expect(lastPrompt()).toContain(`use ${year} in its search query`);
+  });
+
   it("clamps searchQueries per question to MAX_SEARCH_QUERIES_PER_QUESTION", async () => {
     const many = Array.from({ length: MAX_SEARCH_QUERIES_PER_QUESTION + 4 }, (_, i) => `kw${i}`);
     mockQuestions(1, { searchQueries: many });

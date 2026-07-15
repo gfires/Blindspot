@@ -253,7 +253,9 @@ export async function decompose(state: ResearchStateT): Promise<Partial<Research
     ? constraints.map((c) => `  - ${c}`).join("\n")
     : "  (none stated)";
 
-  const prompt = decomposePrompt({ subject, objective, constraintsBlock });
+  // Inject the real current year so recency-sensitive search queries target it, rather than the
+  // model drifting to a training-cutoff year (a live run searched "…market size 2024" in 2026).
+  const prompt = decomposePrompt({ subject, objective, constraintsBlock, currentYear: new Date().getFullYear() });
 
   const { output: object, usage } = await generateText({
     model: managerModel,

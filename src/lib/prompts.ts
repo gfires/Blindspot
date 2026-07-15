@@ -77,8 +77,9 @@ export function decomposePrompt(args: {
   subject: string;
   objective: string;
   constraintsBlock: string;
+  currentYear: number;
 }): string {
-  const { subject, objective, constraintsBlock } = args;
+  const { subject, objective, constraintsBlock, currentYear } = args;
   return [
     "You are the research manager scoping an investigation for an opportunity/market analysis",
     "committee (a historian, operator, investor and skeptic will evaluate the business case).",
@@ -87,6 +88,10 @@ export function decomposePrompt(args: {
     `OBJECTIVE: ${objective}`,
     "CONSTRAINTS (respect these — scope every question inside them):",
     constraintsBlock,
+    "",
+    `The current year is ${currentYear}. When a question is about the CURRENT state of the market`,
+    `(size, pricing, vendors, regulation), use ${currentYear} in its search query, not an older year —`,
+    "we want the latest data. Only use a specific past year when the question is genuinely historical.",
     "",
     `Generate ${MIN_QUESTIONS}–${MAX_QUESTIONS} distinct, researchable questions whose answers`,
     "would together SATISFY the objective. Each must be answerable from web evidence, and the set",
@@ -477,11 +482,13 @@ export const READSOURCE_TOOL_DESCRIPTION =
  * query, judge snippets) and readSource (read the best hits), and stops when it has enough. The
  * MISSION for this pass (recon on loop 0, contested gaps later) arrives as the user message.
  */
-export function researcherSystemPrompt(question: Question): string {
+export function researcherSystemPrompt(question: Question, currentYear: number): string {
   return [
     "You are a research analyst gathering evidence for ONE specific question. Work only this question:",
     `QUESTION: ${question.text}`,
     question.category ? `CATEGORY: ${question.category}` : "",
+    `The current year is ${currentYear}: when you need the latest market/pricing/vendor/regulation data,`,
+    `search ${currentYear} (or "latest"), not an older year — only reach for a past year for genuinely historical facts.`,
     "",
     "You have two tools:",
     "- webSearch(query): run ONE keyword query and get ~10 {title, url, snippet} hits. You get exactly",

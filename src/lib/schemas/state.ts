@@ -34,6 +34,15 @@ export interface Question {
 }
 
 /**
+ * Which implementation the graph's `retrieve` node uses:
+ * - "coded"   — the deterministic code-driven search/triage/scrape workflow (the permanent eval
+ *               control arm; byte-identical behaviour across the whole test suite).
+ * - "agentic" — one bounded Haiku researcher agent per unresolved question (agentic retrieval).
+ * Defaults to "coded" so every existing run/test behaves identically unless explicitly seeded.
+ */
+export type RetrievalMode = "coded" | "agentic";
+
+/**
  * Reducer for the debate-transcript channel: REPLACE a question's rounds wholesale, leaving other
  * questions untouched. Unlike digests (which accumulate across loops), a transcript is ephemeral to
  * one evidence snapshot — when a question is re-debated on a later loop its old conversation is
@@ -124,5 +133,10 @@ export const ResearchState = Annotation.Root({
    * produced (intake had no objective, or the answer call degraded). Replace reducer.
    */
   answer: Annotation<string>({ reducer: (_prev, next) => next, default: () => "" }),
+  /**
+   * Which retrieval implementation the `retrieve` node dispatches to. Seeded once at run start
+   * (runGraph) and never mutated mid-run. Default "coded" keeps the eval control arm byte-identical.
+   */
+  retrievalMode: Annotation<RetrievalMode>({ reducer: (_p, n) => n, default: () => "coded" }),
 });
 export type ResearchStateT = typeof ResearchState.State;

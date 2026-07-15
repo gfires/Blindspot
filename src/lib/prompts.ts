@@ -523,6 +523,51 @@ export function researcherReconNudge(have: number, floor: number): string {
   return `You have gathered ${have} source(s); this is reconnaissance — gather at least ${floor} before finishing.`;
 }
 
+/**
+ * The loop-0 RECONNAISSANCE mission (the user message handed to a researcher agent on the first
+ * pass). Broad, shallow coverage seeded from the question's decompose keyword queries — enough
+ * grounded sources for the committee's opening claims and to let it name its own gaps. `question`
+ * and `queries` are the state-derived pieces missionForQuestion computes; this builder only frames
+ * them. Never empty.
+ */
+export function researcherReconMission(args: { question: string; queries: string[] }): string {
+  const { question, queries } = args;
+  return [
+    `RECONNAISSANCE for this question: ${question}`,
+    "",
+    `Start from these keyword queries: ${queries.join(", ")}.`,
+    "Gather broad, shallow coverage of the space — cast wide before going deep. Aim for enough",
+    "solid, on-topic sources to ground an opening committee assessment and surface where the",
+    "evidence is thin; you do not yet know the specific gaps, so prioritise breadth.",
+  ].join("\n");
+}
+
+/**
+ * The loop-≥1 GAP-TARGETED mission: the committee has debated and is contested on a specific
+ * EVIDENTIAL gap — find the sources that would settle it, and do not re-chase what the run already
+ * holds. `gaps` are the contested claims' named missingEvidence; `seenSources` are the titles/urls
+ * already gathered for this question. missionForQuestion computes both; this builder only frames them.
+ */
+export function researcherGapMission(args: {
+  question: string;
+  gaps: string[];
+  seenSources: string[];
+}): string {
+  const { question, gaps, seenSources } = args;
+  const seenBlock = seenSources.length
+    ? ["", "You ALREADY have these sources — do NOT re-chase them:", ...seenSources.map((s) => `  - ${s}`)]
+    : [];
+  return [
+    `For this question: ${question}`,
+    "",
+    "the committee is contested on a specific EVIDENTIAL gap it needs settled:",
+    ...gaps.map((g) => `  - ${g}`),
+    "",
+    "Find sources that would settle that gap specifically — go deep and targeted, not broad.",
+    ...seenBlock,
+  ].join("\n");
+}
+
 export function answerPrompt(args: {
   objective: string;
   constraintsLine: string;

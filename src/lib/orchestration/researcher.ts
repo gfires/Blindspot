@@ -57,6 +57,7 @@ import { MAX_AGENT_STEPS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } 
 export class PassPool {
   private remaining: number;
   private spentCredits = 0;
+  private billableCalls = 0;
   constructor(seed: number) {
     this.remaining = seed;
   }
@@ -67,9 +68,17 @@ export class PassPool {
   charge(realCredits: number): void {
     this.remaining -= realCredits;
     this.spentCredits += realCredits;
+    // A cache hit charges 0 → no billable Firecrawl call; a live search/scrape charges >0 → exactly
+    // one call. Counting here keeps the agentic arm's firecrawlCalls report honest and parallel to
+    // the coded arm's `queries.length`.
+    if (realCredits > 0) this.billableCalls += 1;
   }
   get spent(): number {
     return this.spentCredits;
+  }
+  /** Number of billable (non-cache-hit) Firecrawl calls charged against this pool. */
+  get calls(): number {
+    return this.billableCalls;
   }
 }
 

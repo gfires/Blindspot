@@ -57,6 +57,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     gateScores: [],
     digests: {},
     debateTranscripts: {},
+    retrievalMode: "coded",
     answer: "",
     ...over,
   };

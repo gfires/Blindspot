@@ -7,6 +7,9 @@
  *   decompose → retrieve → debate → gate ─┬─(continue)→ retrieve   (loop back)
  *                                         └─(stop)────→ recommend → END
  *
+ * (`refine` is gone — the gate loops straight back to `retrieve`, whose agentic body folds the
+ *  old query-generation into the researcher agent's per-question mission.)
+ *
  * Nodes:
  *   - decompose : the manager LLM breaks `topic` into 3–5 research Questions.
  *   - retrieve  : searches the web for each UNRESOLVED question, appends Evidence.
@@ -26,7 +29,7 @@ import { StateGraph, MemorySaver, START, END, GraphRecursionError, type LangGrap
 import { generateText, Output } from "ai";
 import { z } from "zod";
 
-import { ResearchState, type ResearchStateT, type Question } from "../schemas/state";
+import { ResearchState, type ResearchStateT, type Question, type RetrievalMode } from "../schemas/state";
 import { ResearchBriefSchema, fallbackBrief, type ResearchBrief } from "../schemas/brief";
 import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
@@ -37,7 +40,7 @@ import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
 // Prompt wording lives in src/lib/prompts.ts; the nodes keep the state-shaping and pass the
 // computed pieces into these builders.
-import { intakePrompt, decomposePrompt, refinePrompt, answerPrompt } from "../prompts";
+import { intakePrompt, decomposePrompt, answerPrompt, researcherReconMission, researcherGapMission } from "../prompts";
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
@@ -46,6 +49,10 @@ import { search } from "../evidence/firecrawl";
 // transcript. (committee derives the loop iteration from the evidence's own loopIteration.)
 import { runDebate, splitEvidence } from "./committee";
 import { extractContentions, type DebateRound } from "./debate";
+// researcher.ts (P3): one bounded Haiku researcher agent per unresolved question, drawing from a
+// shared FCFS pass-budget pool. The agentic `retrieve` body drives these; the pool is the sole
+// per-pass credit accountant the node reconciles into the single budget delta.
+import { runResearcher, PassPool } from "./researcher";
 // digest.ts: compress each question's fresh evidence with a cheap Haiku pass (L2).
 import { digestEvidence, type DigestItem } from "./digest";
 // gate.ts (this package): budget allocation + loop control. Stub for now.
@@ -56,14 +63,14 @@ import { allocateBudget } from "./gate";
 // ---------------------------------------------------------------------------
 
 /**
- * LangGraph's default recursionLimit (25) collides with a full run: a single loop
- * pass is 4 supersteps (retrieve/debate/gate/refine), plus 4 initial supersteps
- * (decompose/retrieve/debate/gate) and a final recommend. So `maxLoops` full passes
- * need `4 + 4*maxLoops + 1` supersteps; we add a small margin.
+ * LangGraph's default recursionLimit (25) collides with a full run. With `refine` deleted, a single
+ * loop pass is now 3 supersteps (retrieve/debate/gate), not 4 — the gate loops straight back to
+ * retrieve. The fixed front is intake + decompose + the initial retrieve/debate/gate (5 supersteps)
+ * and a final recommend (1). So `maxLoops` extra full passes need `6 + 3*maxLoops` supersteps; we add
+ * a small margin. (26 at maxLoops=5, still comfortably above LangGraph's default of 25.)
  */
 export function computeRecursionLimit(maxLoops: number): number {
-  // +1 base for the intake node (a fixed superstep in front of decompose).
-  return 6 + 4 * maxLoops + 5; // needed supersteps + margin
+  return 6 + 3 * maxLoops + 5; // needed supersteps + margin
 }
 
 export function scopeEvidenceToQuestions(
@@ -299,12 +306,135 @@ const unresolved = (state: ResearchStateT): Question[] =>
   state.questions.filter((q) => !q.resolved);
 
 /**
- * Search the web for every unresolved question and append the hits. `search` takes
+ * The `retrieve` node dispatcher. `retrievalMode` (seeded once at run start) picks the body:
+ * "agentic" runs one researcher agent per unresolved question; "coded" (the default, the permanent
+ * eval control arm) runs the deterministic search/triage/scrape workflow BYTE-IDENTICALLY to before
+ * this migration. Both bodies honour the same contract — the SOLE signed budget delta and
+ * newEvidenceCount on every return path — so the gate and reducers can't tell them apart.
+ */
+export function retrieve(
+  state: ResearchStateT,
+  config?: LangGraphRunnableConfig,
+): Promise<Partial<ResearchStateT>> {
+  return state.retrievalMode === "agentic" ? retrieveAgentic(state, config) : retrieveCoded(state, config);
+}
+
+/** Dedupe Evidence by contentHash, keeping first occurrence. Kept local to graph.ts (a 6-line pure
+ * fn) so the agentic body doesn't couple to researcher.ts's private copy. */
+function dedupeByContentHash(items: Evidence[]): Evidence[] {
+  const seen = new Set<string>();
+  const out: Evidence[] = [];
+  for (const e of items) {
+    if (seen.has(e.contentHash)) continue;
+    seen.add(e.contentHash);
+    out.push(e);
+  }
+  return out;
+}
+
+/**
+ * Build ONE researcher agent's mission (its user message) for this pass:
+ * - loop 0: reconnaissance seeded from the question's keyword queries — NEVER empty.
+ * - loop ≥1: the question's CONTESTED EVIDENTIAL gaps (mirrors the deleted refine's exact logic).
+ *   Returns "" when there is no evidential contention to chase, so retrieveAgentic skips the
+ *   question — which drives the gate's no-progress convergence.
+ *
+ * loopIteration trap (invariant 4 / landmine 2): the gate increments loopIteration BEFORE the
+ * loop-back, so final-round claims carry the PRE-increment loop. We therefore read claims WITHOUT
+ * any `=== state.loopIteration` filter (that filter matched nothing and was the exact no-op refine
+ * hit at graph.ts:483). Exported for direct unit testing.
+ */
+export function missionForQuestion(state: ResearchStateT, q: Question): string {
+  if (state.loopIteration === 0) {
+    const queries = q.searchQueries?.length ? q.searchQueries : [q.text];
+    return researcherReconMission({ question: q.text, queries });
+  }
+  // Latest debated positions for this question: the final debate round when present, else its
+  // claims. NOT filtered by state.loopIteration (see the trap note above).
+  const rounds = state.debateTranscripts[q.id];
+  const finalRound = rounds?.[rounds.length - 1];
+  const latestClaims = finalRound?.claims ?? state.claims.filter((c) => c.questionId === q.id);
+  // The roles standing on either side of an EVIDENTIAL contention (a named gap that could settle
+  // their disagreement); focus the pass there rather than every role's wishlist. Fall back to all
+  // claims when no specific evidential contention was found.
+  const contested = new Set(
+    (finalRound ? extractContentions(q.id, finalRound.claims) : [])
+      .filter((c) => c.type === "evidential")
+      .flatMap((c) => c.roles),
+  );
+  const gapClaims = contested.size ? latestClaims.filter((c) => contested.has(c.agentRole)) : latestClaims;
+  const gaps = gapClaims.flatMap((c) => c.missingEvidence).filter(Boolean);
+  // No evidential contention → nothing to chase; skip this question (gate no-progress convergence).
+  if (gaps.length === 0) return "";
+  // Titles/urls already gathered for this question, so the agent doesn't re-chase them.
+  const scoped = scopeEvidenceToQuestions(state.questions, state.evidence).get(q.id) ?? [];
+  const seenSources = scoped.map((e) => `${e.title} (${e.url})`);
+  return researcherGapMission({ question: q.text, gaps, seenSources });
+}
+
+/**
+ * The AGENTIC retrieve body: one researcher agent per unresolved question, run concurrently and
+ * drawing FCFS from ONE shared pass-budget pool. This node is the SOLE budget writer (invariants
+ * 1/3): agents spend the pool, the node reconciles the pool's total credits into a single signed
+ * delta at node end. A thrown BudgetExceededError (the interior $-cap) is NOT caught here — it
+ * rejects Promise.all and propagates to runGraphInner's degrade path (invariant 6).
+ */
+export async function retrieveAgentic(
+  state: ResearchStateT,
+  _config?: LangGraphRunnableConfig,
+): Promise<Partial<ResearchStateT>> {
+  const questions = unresolved(state);
+  // newEvidenceCount on EVERY return path (invariant 7) — an early return adds no evidence → 0.
+  if (questions.length === 0) return { newEvidenceCount: 0 };
+
+  // Missions: loop-0 recon for every unresolved question; loop-≥1 only where a gap is named.
+  const withMission = questions
+    .map((q) => ({ q, mission: missionForQuestion(state, q) }))
+    .filter((x) => x.mission.trim().length > 0);
+  if (withMission.length === 0) return { newEvidenceCount: 0 };
+
+  // Seed the shared pass pool (invariant 5 — the Math.min clamp is load-bearing on later loops;
+  // mirrors retrieveCoded's loopBudget). initialBudget is reconstructed from the additive deltas.
+  const initialBudget = state.budgetRemaining + state.budgetSpent;
+  const seed = Math.min(
+    state.budgetRemaining,
+    Math.max(1, Math.ceil(initialBudget * MAX_LOOP_SPEND_FRACTION)),
+  );
+  const passPool = new PassPool(seed);
+  const seenUrls = new Set(state.evidence.map((e) => e.url));
+
+  // Concurrent agents draw FCFS from the one pool. A thrown BudgetExceededError (interior $-cap)
+  // must propagate — do NOT wrap in try/catch: it rejects Promise.all → the degrade path.
+  const results = await Promise.all(
+    withMission.map(({ q, mission }) => runResearcher(q, mission, state.loopIteration, seenUrls, passPool)),
+  );
+
+  // Dedupe across agents by contentHash (agents may surface the same page); node reconciles once.
+  const newEvidence = dedupeByContentHash(results.flatMap((r) => r.evidence));
+  const credits = passPool.spent;
+  const llmCalls = results.map((r) => r.usage);
+
+  // ONE signed budget delta — sole writer (invariants 1/3). searchedQueries is intentionally NOT
+  // updated: agent-invented queries aren't registered; scoping is by questionId now (P1).
+  return {
+    evidence: newEvidence,
+    firecrawlCalls: passPool.calls,
+    firecrawlCredits: credits,
+    budgetRemaining: -credits,
+    budgetSpent: credits,
+    newEvidenceCount: newEvidence.length,
+    llmCalls,
+  };
+}
+
+/**
+ * The CODED retrieve body (permanent eval control arm — kept byte-identical to before the agentic
+ * migration). Search the web for every unresolved question and append the hits. `search` takes
  * the batch of query strings and parallelizes internally, tagging each Evidence with
  * its `sourceQuery` and the current `loopIteration`. The `evidence` reducer is
  * append-only, so we return only the new items.
  */
-async function retrieve(
+async function retrieveCoded(
   state: ResearchStateT,
   config?: LangGraphRunnableConfig,
 ): Promise<Partial<ResearchStateT>> {
@@ -461,102 +591,15 @@ async function gate(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
 }
 
 /**
- * Conditional edge after `gate`: loop back to `refine` (which generates new queries
- * from missingEvidence before re-retrieving) while the gate wants to continue and
- * budget remains; otherwise finish.
+ * Conditional edge after `gate`: loop straight back to `retrieve` while the gate wants to continue
+ * and budget remains; otherwise finish. (`refine` is deleted — the agentic retrieve body folds its
+ * old query-generation into each researcher agent's mission via missionForQuestion.) Exported for
+ * direct unit testing. The `budgetRemaining > 0` guard is load-bearing: a converged-or-broke run
+ * must route to recommend, not spin.
  */
-function routeAfterGate(state: ResearchStateT): "refine" | "recommend" {
+export function routeAfterGate(state: ResearchStateT): "retrieve" | "recommend" {
   const continueLoop = !state.converged;
-  return continueLoop && state.budgetRemaining > 0 ? "refine" : "recommend";
-}
-
-// ---------------------------------------------------------------------------
-// refine — generate targeted queries from missingEvidence before re-retrieving
-// ---------------------------------------------------------------------------
-
-const RefineSchema = z.object({
-  questions: z.array(z.object({
-    questionId: z.string(),
-    searchQueries: z.array(z.string()).describe("1-3 targeted search queries"),
-  })),
-});
-
-export async function refine(state: ResearchStateT): Promise<Partial<ResearchStateT>> {
-  const costTracker = getActiveCostTracker();
-  costTracker?.check();
-
-  const open = unresolved(state);
-  if (open.length === 0) return {};
-
-  const sections = open.map((q) => {
-    // The latest debated positions for this question: the final debate round when present, else the
-    // question's claims. Do NOT filter by state.loopIteration — the gate increments loopIteration
-    // BEFORE refine runs, while these claims carry the PRE-increment loop, so a `=== loopIteration`
-    // filter matched nothing and refine silently produced no queries (a no-op second pass).
-    const rounds = state.debateTranscripts[q.id];
-    const finalRound = rounds?.[rounds.length - 1];
-    const latestClaims = finalRound?.claims ?? state.claims.filter((c) => c.questionId === q.id);
-    // Draw gaps from the CONTESTED claims — the roles standing on either side of an evidential
-    // contention (a named gap that could settle their disagreement). Focusing the second retrieval
-    // pass there aims it at the actual fault line rather than every role's wishlist. Fall back to all
-    // gaps when no specific evidential contention was found (e.g. no transcript this loop).
-    const contested = new Set(
-      (finalRound ? extractContentions(q.id, finalRound.claims) : [])
-        .filter((c) => c.type === "evidential")
-        .flatMap((c) => c.roles),
-    );
-    const gapClaims = contested.size ? latestClaims.filter((c) => contested.has(c.agentRole)) : latestClaims;
-    const gaps = gapClaims.flatMap((c) => c.missingEvidence).filter(Boolean);
-    const gapText = gaps.length > 0 ? gaps.join("; ") : "";
-    return { id: q.id, text: q.text, gaps, gapText };
-  });
-
-  const hasAnyGaps = sections.some((s) => s.gaps.length > 0);
-  if (!hasAnyGaps) return {};
-
-  const sectionText = sections.map(
-    (s) => `Question ${s.id}: ${s.text}\n  Evidence gaps: ${s.gapText || "none noted — generate diverse queries"}`,
-  );
-
-  const prompt = refinePrompt(sectionText);
-
-  const { output: object, usage } = await generateText({
-    model: managerModel,
-    output: Output.object({ schema: RefineSchema }),
-    prompt,
-    maxRetries: LLM_MAX_RETRIES,
-  });
-
-  const annotated = toAnnotatedUsage(usage, managerModel.modelId, "refine");
-  costTracker?.record({ model: managerModel.modelId, promptTokens: annotated.promptTokens, completionTokens: annotated.completionTokens });
-
-  const trace = getActiveTrace();
-  if (trace) {
-    trace.logLlmCall("refine", { model: managerModel.modelId, prompt }, object, usage);
-  }
-
-  // Clamp query count in code — each query is a Firecrawl search, so this bounds spend.
-  const queryMap = new Map(
-    object.questions
-      .filter((q) => q.searchQueries.length > 0)
-      .map((q) => [q.questionId, q.searchQueries.slice(0, 3)]),
-  );
-  // ACCUMULATE, don't replace: evidence already gathered under q.searchQueries (or
-  // q.text, for loop 0) is tagged with those exact query strings via Evidence.sourceQuery
-  // (see search()/retrieve()). debate() reconstructs question ownership from that
-  // history (scopeEvidenceToQuestions below) — overwriting searchQueries here would
-  // orphan every prior loop's evidence from all future committee calls.
-  const questions = state.questions.map((q) => {
-    const newQueries = queryMap.get(q.id);
-    if (!newQueries) return q;
-    const priorQueries = q.searchQueries && q.searchQueries.length > 0 ? q.searchQueries : [q.text];
-    return { ...q, searchQueries: [...new Set([...priorQueries, ...newQueries])] };
-  });
-
-  return {
-    questions,
-    llmCalls: [annotated],
-  };
+  return continueLoop && state.budgetRemaining > 0 ? "retrieve" : "recommend";
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +855,6 @@ const workflow = new StateGraph(ResearchState)
   .addNode("retrieve", retrieve)
   .addNode("debate", debate)
   .addNode("gate", gate)
-  .addNode("refine", refine)
   .addNode("recommend", recommend)
   .addEdge(START, "intake")
   .addEdge("intake", "decompose")
@@ -820,10 +862,9 @@ const workflow = new StateGraph(ResearchState)
   .addEdge("retrieve", "debate")
   .addEdge("debate", "gate")
   .addConditionalEdges("gate", routeAfterGate, {
-    refine: "refine",
+    retrieve: "retrieve",
     recommend: "recommend",
   })
-  .addEdge("refine", "retrieve")
   .addEdge("recommend", END);
 
 /**
@@ -841,14 +882,22 @@ export function compileResearchGraph() {
   return workflow.compile({ checkpointer });
 }
 
-export function runGraph(topic: string, budgetOverride?: number): Promise<ArmResult> {
+export function runGraph(
+  topic: string,
+  budgetOverride?: number,
+  retrievalMode: RetrievalMode = "coded",
+): Promise<ArmResult> {
   // Run the whole graph inside a per-run cost tracker (AsyncLocalStorage) so every
   // getActiveCostTracker() in the async tree resolves to THIS run's tracker — two
   // concurrent runs never share or clobber each other's spend.
-  return runWithCostTracker(() => runGraphInner(topic, budgetOverride));
+  return runWithCostTracker(() => runGraphInner(topic, budgetOverride, retrievalMode));
 }
 
-async function runGraphInner(topic: string, budgetOverride?: number): Promise<ArmResult> {
+async function runGraphInner(
+  topic: string,
+  budgetOverride?: number,
+  retrievalMode: RetrievalMode = "coded",
+): Promise<ArmResult> {
   const trace = startTrace();
   const graph = compileResearchGraph();
   const threadId = `run-${Date.now()}`;
@@ -860,7 +909,7 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
 
     try {
       finalState = await graph.invoke(
-        { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET },
+        { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET, retrievalMode },
         { configurable: { thread_id: threadId }, recursionLimit: computeRecursionLimit(MAX_LOOP_ITERATIONS) },
       );
     } catch (err) {
@@ -936,8 +985,12 @@ async function runGraphInner(topic: string, budgetOverride?: number): Promise<Ar
       },
     });
 
+    // The arm label distinguishes the two retrieval implementations in the eval (ArmResult.arm is a
+    // string). "coded" retrieval keeps the historical "orchestrated" label so the control arm's data
+    // doesn't move; the agentic body reports as "agentic".
+    const arm = retrievalMode === "agentic" ? "agentic" : "orchestrated";
     return {
-      arm: "orchestrated" as const,
+      arm,
       topic,
       report,
       // Fold in the degrade-path answer's usage — it runs outside the graph, so it's not in llmCalls.

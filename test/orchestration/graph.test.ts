@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { compileResearchGraph, synthesizeReport, computeRecursionLimit, resultsPerQuestionForLoop } from "@/lib/orchestration/graph";
-import { RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION } from "@/lib/params";
+import { compileResearchGraph, synthesizeReport, computeRecursionLimit, resultsPerQuestionForLoop, routeAfterGate } from "@/lib/orchestration/graph";
+import { RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION, MAX_LOOP_ITERATIONS } from "@/lib/params";
 import { accumulate } from "@/lib/schemas/state";
 import { fallbackBrief } from "@/lib/schemas/brief";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
@@ -58,6 +58,31 @@ describe("computeRecursionLimit", () => {
     for (let n = 0; n < 8; n++) {
       expect(computeRecursionLimit(n + 1)).toBeGreaterThan(computeRecursionLimit(n));
     }
+  });
+
+  it("[REGRESSION] comfortably clears a full MAX_LOOP_ITERATIONS run's superstep count (3/loop)", () => {
+    // Front matter (intake, decompose, initial retrieve/debate/gate) + recommend = 6, then 3
+    // supersteps per extra loop. The limit must sit strictly above that so a full run never trips it.
+    const neededSupersteps = 6 + 3 * MAX_LOOP_ITERATIONS;
+    expect(computeRecursionLimit(MAX_LOOP_ITERATIONS)).toBeGreaterThan(neededSupersteps);
+  });
+});
+
+describe("routeAfterGate [REGRESSION]", () => {
+  const routeState = (over: Partial<ResearchStateT>): ResearchStateT =>
+    stateOf({ converged: false, budgetRemaining: 10, ...over });
+
+  it("loops back to retrieve while not converged and budget remains", () => {
+    expect(routeAfterGate(routeState({ converged: false, budgetRemaining: 10 }))).toBe("retrieve");
+  });
+
+  it("routes to recommend once converged", () => {
+    expect(routeAfterGate(routeState({ converged: true, budgetRemaining: 10 }))).toBe("recommend");
+  });
+
+  it("routes to recommend when budget is exhausted, even if not converged (budgetRemaining > 0 guard)", () => {
+    expect(routeAfterGate(routeState({ converged: false, budgetRemaining: 0 }))).toBe("recommend");
+    expect(routeAfterGate(routeState({ converged: false, budgetRemaining: -5 }))).toBe("recommend");
   });
 });
 

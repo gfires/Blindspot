@@ -114,6 +114,28 @@ export const MAX_DEBATE_ROUNDS = 2;
 // Round-over-round: a confidence move at or below this counts as "no movement" for convergence.
 export const DEBATE_CONFIDENCE_EPSILON        = 0.05;
 
+// -- Orchestration: utility models (manager/gate/digest) ---------------------
+// Every non-committee model id in ONE place (mirrors roles.ts doing the same for the four
+// committee roles) so swapping any of them is a one-line edit here, never a hunt through
+// models/provider.ts. Each id must exist in pricing.ts's MODEL_CATALOG.
+
+// Intake (topic -> ResearchBrief) + decompose (topic -> questions): fast, cheap reads of the
+// raw topic, no deep reasoning needed. Haiku is genuinely the right tier here, not just the
+// cheap default — both calls are small-schema extraction, not judgment calls.
+export const MANAGER_MODEL_ID = "claude-haiku-4-5-20251001";
+// The recommend node's ANSWER step (A5) — the ONE call that writes the final deliverable, so it
+// runs on the strongest available model, not a cheap tier. This is `gateModel` in
+// models/provider.ts (a legacy name predating the stance-routing gate) — it is NOT the gate
+// decision model; see GATE_CLASSIFIER_MODEL_ID below for that.
+export const ANSWER_MODEL_ID = "claude-sonnet-5";
+// The actual retrieve/resolve gate classifier (gate.ts's allocateBudget). A cheap, fast model is
+// fine here: the LLM gate only ever sees questions the zero-cost stance/contention routing
+// couldn't resolve on its own (questionRoute/contentionRoute), never the full question set.
+export const GATE_CLASSIFIER_MODEL_ID = "gpt-4o-mini";
+// Per-question evidence digest (L2) — same cheap/fast tier as MANAGER_MODEL_ID, same reasoning:
+// compressing a source to one summary item is extraction, not judgment.
+export const DIGEST_MODEL_ID = "claude-haiku-4-5-20251001";
+
 // -- Orchestration: researcher (agentic retrieval) ---------------------------
 
 // The researcher agent runs on Haiku — its job is search PLANNING (pick a query, judge

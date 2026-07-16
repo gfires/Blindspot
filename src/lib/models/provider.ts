@@ -3,7 +3,13 @@ import { openai } from "@ai-sdk/openai";
 import { google } from "@ai-sdk/google";
 import type { AgentRoleT } from "../schemas/claim";
 import { ROLES } from "../roles";
-import { RESEARCHER_MODEL_ID } from "../params";
+import {
+  RESEARCHER_MODEL_ID,
+  MANAGER_MODEL_ID,
+  ANSWER_MODEL_ID,
+  GATE_CLASSIFIER_MODEL_ID,
+  DIGEST_MODEL_ID,
+} from "../params";
 import { MODEL_CATALOG, type ModelProviderT } from "../pricing";
 
 const PROVIDER_FACTORIES: Record<ModelProviderT, (id: string) => ReturnType<typeof anthropic>> = {
@@ -45,10 +51,13 @@ export function modelForDebateRound(role: AgentRoleT, debateRound: number, loopI
   return modelFromId(ROLES[role].redebateModel);
 }
 
-export const managerModel = anthropic("claude-haiku-4-5-20251001");
-export const gateModel = anthropic("claude-sonnet-5");
-export const gateClassifierModel = openai("gpt-4o-mini");
+export const managerModel = anthropic(MANAGER_MODEL_ID);
+// NOT the gate decision model (see gateClassifierModel below) — this runs the recommend node's
+// final ANSWER call. Kept as `gateModel` (legacy name, predates the stance-routing gate) to avoid
+// an unrelated rename; see ANSWER_MODEL_ID's comment in params.ts.
+export const gateModel = anthropic(ANSWER_MODEL_ID);
+export const gateClassifierModel = openai(GATE_CLASSIFIER_MODEL_ID);
 // L2 evidence digest: cheap, fast model to compress each source before the committee.
-export const digestModel = anthropic("claude-haiku-4-5-20251001");
+export const digestModel = anthropic(DIGEST_MODEL_ID);
 // The agentic-retrieval researcher agent (P3): Haiku for search planning, not deep reasoning.
 export const researcherModel = anthropic(RESEARCHER_MODEL_ID);

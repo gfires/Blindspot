@@ -18,7 +18,7 @@ import type { DigestItem } from "./digest";
 import type { ResearcherProgress } from "./researcher";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
-import { TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
+import { TOTAL_RETRIEVAL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
 import { startTrace } from "./trace";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "./cost-tracker";
 
@@ -58,7 +58,7 @@ async function runGraphStreamingInner(
   // already begun executing, which would delay the first begin event by seconds.
   send({ type: "decompose:begin" });
 
-  const initialBudget = budgetOverride ?? TOTAL_FIRECRAWL_BUDGET;
+  const initialBudget = budgetOverride ?? TOTAL_RETRIEVAL_BUDGET;
   const stream = await graph.stream(
     { topic, budgetRemaining: initialBudget, retrievalMode },
     // "updates" fires only on node COMPLETION, so begin events are emitted eagerly

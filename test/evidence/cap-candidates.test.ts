@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { capCandidatesPerQuery, selectCandidatesByScore } from "@/lib/evidence/firecrawl";
+import { capCandidatesPerQuery, selectCandidatesByScore } from "@/lib/evidence/candidates";
 import type { Candidate, TriageScore } from "@/lib/triage";
 
 function c(url: string, intents: string[]): Candidate {

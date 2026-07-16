@@ -5,7 +5,7 @@
 import type { ScanReport } from "@/lib/schema";
 import type { ScanState, UsageSummary } from "@/lib/useScanStream";
 import { SCORE_DEFINITIONS } from "@/lib/analyze";
-import { MODEL_CATALOG } from "@/lib/models/pricing";
+import { MODEL_CATALOG } from "@/lib/pricing";
 import { OpportunityMeter } from "./OpportunityMeter";
 import { Gauge } from "./Gauge";
 import { ReportSection, EvidenceList } from "./ReportSection";
@@ -182,7 +182,7 @@ export function ReportView({
 }
 
 /**
- * Pulls straight from MODEL_CATALOG (lib/models/pricing.ts) — the same table the backend cost
+ * Pulls straight from MODEL_CATALOG (lib/pricing.ts) — the same table the backend cost
  * tracker uses — so this display can never drift from what a run actually billed. An id absent
  * from the catalog contributes $0 rather than guessing another model's rate (was: silently
  * mispricing every unrecognized model at gpt-4o's rate).

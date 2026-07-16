@@ -12,7 +12,7 @@
 import { explore } from "../evidence/provider";
 import { callLLM, assembleReport } from "../analyze";
 import { normalizeIndustry } from "../intents";
-import { MODEL_CATALOG } from "../models/pricing";
+import { MODEL_CATALOG } from "../pricing";
 import type { ScanReport } from "../schema";
 import type { ResearchReport } from "./graph";
 import type { ScanEvent, TokenUsage } from "../events";
@@ -21,7 +21,7 @@ import type { RunMechanics } from "./mechanics";
 export type { RunMechanics } from "./mechanics";
 
 /**
- * Cost per million tokens by model (USD): MODEL_CATALOG (models/pricing.ts) is the single
+ * Cost per million tokens by model (USD): MODEL_CATALOG (pricing.ts) is the single
  * source of truth for both pricing and provider routing. Update pricing there, not here.
  */
 const MODEL_COST = MODEL_CATALOG;

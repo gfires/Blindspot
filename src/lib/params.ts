@@ -32,7 +32,12 @@ export const MAX_QUESTIONS         = 4;
 // -- Orchestration: gate / budget --------------------------------------------
 
 export const MAX_LOOP_ITERATIONS   = 5;
-export const TOTAL_FIRECRAWL_BUDGET = 80;
+// ONE combined credit pool that search-credits and scrape-credits draw down together, regardless
+// of which providers are selected (evidence/config.ts's SEARCH_PROVIDER / SCRAPE_PROVIDER) — not
+// two independent caps. Search/scrape spend is still separately ACCOUNTED (state.searchCredits /
+// state.scrapeCredits, mechanics.ts's retrieval split) so the breakdown is visible; only the CAP
+// itself stays unified, closest to pre-split behavior with correct per-provider rates.
+export const TOTAL_RETRIEVAL_BUDGET = 80;
 // Hard USD cap on a run's LLM spend, enforced by the cost tracker (check() before each gated call).
 // The final objective-level ANSWER is EXEMPT (it records cost but never gates) — the deliverable is
 // non-negotiable and always gets written, even on a run that hit this cap. So a run's total can land

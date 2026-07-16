@@ -86,6 +86,8 @@ function makeState(overrides: Partial<ResearchStateT> = {}): ResearchStateT {
     budgetSpent: 0,
     firecrawlCalls: 0,
     firecrawlCredits: 0,
+    searchCredits: 0,
+    scrapeCredits: 0,
     converged: false,
     llmCalls: [],
     searchedQueries: [],
@@ -210,6 +212,8 @@ function fixtureState(): ResearchStateT {
     loopIteration: 2,
     firecrawlCalls: 5,
     firecrawlCredits: 10,
+    searchCredits: 4,
+    scrapeCredits: 6,
     converged: true,
     debateTranscripts: fixtureTranscripts(),
   });
@@ -239,6 +243,12 @@ describe("computeRunMechanics — retrieval", () => {
     expect(m.retrieval.scrapeOps).toBe(1);
     expect(m.retrieval.firecrawlCalls).toBe(5);
     expect(m.retrieval.firecrawlCredits).toBe(10);
+  });
+
+  it("reports the search/scrape credit split, summing to firecrawlCredits", () => {
+    expect(m.retrieval.searchCredits).toBe(4);
+    expect(m.retrieval.scrapeCredits).toBe(6);
+    expect(m.retrieval.searchCredits + m.retrieval.scrapeCredits).toBe(m.retrieval.firecrawlCredits);
   });
 
   it("counts agent searches/reads and the search:read ratio", () => {

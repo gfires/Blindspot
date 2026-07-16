@@ -45,6 +45,9 @@ export interface RunMechanics {
     evidenceByLoop: Record<string, number>;
     firecrawlCalls: number;
     firecrawlCredits: number;
+    /** firecrawlCredits split by kind — always searchCredits + scrapeCredits === firecrawlCredits. */
+    searchCredits: number;
+    scrapeCredits: number;
     cacheHits: number;
     searchOps: number;
     scrapeOps: number;
@@ -177,6 +180,8 @@ export function computeRunMechanics(
 
   const evidenceTotal = evidence.length;
   const firecrawlCredits = num(state.firecrawlCredits);
+  const searchCredits = num(state.searchCredits);
+  const scrapeCredits = num(state.scrapeCredits);
 
   // -- deliberation --
   const debateRoundEntries = entriesOfType(safeEntries, "debate:round");
@@ -333,6 +338,8 @@ export function computeRunMechanics(
       evidenceByLoop,
       firecrawlCalls: num(state.firecrawlCalls),
       firecrawlCredits,
+      searchCredits,
+      scrapeCredits,
       cacheHits,
       searchOps: opCount("search"),
       scrapeOps: opCount("scrape"),
@@ -396,7 +403,8 @@ export function formatMechanicsReport(m: RunMechanics): string {
   L.push("RETRIEVAL");
   L.push(
     `  evidence ${r.evidenceTotal} (${r.evidencePerCredit.toFixed(2)}/credit) · ` +
-      `firecrawl ${r.firecrawlCalls} calls / ${r.firecrawlCredits} credits · ` +
+      `firecrawl ${r.firecrawlCalls} calls / ${r.firecrawlCredits} credits ` +
+      `(${r.searchCredits} search / ${r.scrapeCredits} scrape) · ` +
       `${r.searchOps} search / ${r.scrapeOps} scrape / ${r.cacheHits} cache-hit${starvedFlag}`,
   );
   if (r.agentSearches !== undefined) {

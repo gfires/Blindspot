@@ -41,8 +41,15 @@ vi.mock("@/lib/blocklist", async () => {
   const actual = await vi.importActual<typeof import("@/lib/blocklist")>("@/lib/blocklist");
   return { ...actual, loadBlocklist: async () => new Set<string>(), recordBlock: async () => {} };
 });
+// Force both operations onto Firecrawl (default config is search=exa/scrape=firecrawl) — this
+// file proves the concurrency cap holds against Firecrawl's own limiter end to end.
+vi.mock("@/lib/evidence/config", async (orig) => ({
+  ...(await orig<typeof import("@/lib/evidence/config")>()),
+  SEARCH_PROVIDER: "firecrawl",
+  SCRAPE_PROVIDER: "firecrawl",
+}));
 
-import { search } from "@/lib/evidence/firecrawl";
+import { search } from "@/lib/evidence/provider";
 
 beforeAll(() => {
   process.env.FIRECRAWL_API_KEY = "test-key";

@@ -4,7 +4,7 @@ import { google } from "@ai-sdk/google";
 import type { AgentRoleT } from "../schemas/claim";
 import { ROLES } from "../roles";
 import { RESEARCHER_MODEL_ID } from "../params";
-import { MODEL_CATALOG, type ModelProviderT } from "./pricing";
+import { MODEL_CATALOG, type ModelProviderT } from "../pricing";
 
 const PROVIDER_FACTORIES: Record<ModelProviderT, (id: string) => ReturnType<typeof anthropic>> = {
   anthropic,
@@ -14,14 +14,14 @@ const PROVIDER_FACTORIES: Record<ModelProviderT, (id: string) => ReturnType<type
 
 /**
  * Resolve a model id string to its SDK model instance, purely off MODEL_CATALOG's `provider`
- * field (models/pricing.ts). Swapping or adding a model is a catalog edit, never a code change
- * here — an id missing from the catalog throws immediately (fail loud on a typo, not a silent $0
+ * field (pricing.ts). Swapping or adding a model is a catalog edit, never a code change here —
+ * an id missing from the catalog throws immediately (fail loud on a typo, not a silent $0
  * cost estimate downstream in eval.ts).
  */
 function modelFromId(id: string) {
   const entry = MODEL_CATALOG[id];
   if (!entry) {
-    throw new Error(`modelFromId: "${id}" is not in MODEL_CATALOG (models/pricing.ts) — add it there first.`);
+    throw new Error(`modelFromId: "${id}" is not in MODEL_CATALOG (pricing.ts) — add it there first.`);
   }
   return PROVIDER_FACTORIES[entry.provider](id);
 }

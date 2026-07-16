@@ -77,6 +77,8 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     budgetSpent: 0,
     firecrawlCalls: 0,
     firecrawlCredits: 0,
+    searchCredits: 0,
+    scrapeCredits: 0,
     converged: false,
     llmCalls: [],
     searchedQueries: [],

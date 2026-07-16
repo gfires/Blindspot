@@ -10,7 +10,7 @@
  * message assembly) — it imports ROLES here for persona text. models/provider.ts imports ROLES
  * here for model resolution instead of two separate params.ts maps.
  *
- * Every `model`/`redebateModel` id here must exist in models/pricing.ts's MODEL_CATALOG.
+ * Every `model`/`redebateModel` id here must exist in pricing.ts's MODEL_CATALOG.
  */
 import type { AgentRoleT } from "./schemas/claim";
 

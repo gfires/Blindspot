@@ -4,6 +4,7 @@ import type { ResearchUIState } from "@/lib/useResearchStream";
 import type { ResearchReport } from "@/lib/orchestration/graph";
 import type { AgentRoleT } from "@/lib/schemas/claim";
 import { QuestionBoard } from "./QuestionBoard";
+import { RunMechanicsReceipt } from "./RunMechanicsReceipt";
 
 const ROLE_LABELS: Record<AgentRoleT, string> = {
   historian: "Historian",
@@ -150,6 +151,9 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
           </details>
         )}
       </div>
+
+      {/* Run mechanics receipt */}
+      {scan.mechanics && <RunMechanicsReceipt mechanics={scan.mechanics} />}
 
       {/* Exploration trace */}
       <details className="panel">

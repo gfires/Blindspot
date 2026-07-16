@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { reduce, initialResearchState } from "@/lib/useResearchStream";
 import type { Claim } from "@/lib/schemas/claim";
-import type { Question } from "@/lib/schemas/state";
+import type { Question, ResearchStateT } from "@/lib/schemas/state";
+import { computeRunMechanics } from "@/lib/orchestration/mechanics";
+import { rollupTokens } from "@/lib/orchestration/eval";
 
 function makeQuestion(id: string): Question {
   return { id, text: `text ${id}`, category: "cat", confidence: 0, resolved: false };
@@ -165,5 +167,17 @@ describe("reduce — researcherByQuestion (board spec §3d)", () => {
     expect(passes[1].mission).toBe("m1");
     expect(passes[1].searches).toHaveLength(1);
     expect(passes[1].done).toBeUndefined();
+  });
+});
+
+describe("reduce — research:mechanics (board spec §6 Phase 5)", () => {
+  it("sets state.mechanics from the terminal event, read-only from computeRunMechanics", () => {
+    const mechanics = computeRunMechanics([], {} as ResearchStateT, rollupTokens([]));
+    const s = reduce(initialResearchState, { type: "research:mechanics", mechanics });
+    expect(s.mechanics).toBe(mechanics);
+  });
+
+  it("starts null before any research:mechanics event", () => {
+    expect(initialResearchState.mechanics).toBeNull();
   });
 });

@@ -8,6 +8,7 @@ import type { Evidence } from "./schemas/evidence";
 import type { Claim } from "./schemas/claim";
 import type { AnnotatedUsage } from "./orchestration/eval";
 import type { ResearchReport } from "./orchestration/graph";
+import type { RunMechanics } from "./orchestration/mechanics";
 
 export interface QuestionStatus {
   question: Question;
@@ -83,6 +84,8 @@ export interface ResearchUIState {
   usage: ResearchUsage;
   trace: string[];
   report: ResearchReport | null;
+  /** The run-mechanics receipt (§6 Phase 5) — set from the terminal research:mechanics event. */
+  mechanics: RunMechanics | null;
   error: string | null;
   running: boolean;
 }
@@ -113,6 +116,7 @@ export const initialResearchState: ResearchUIState = {
   },
   trace: [],
   report: null,
+  mechanics: null,
   error: null,
   running: false,
 };
@@ -486,6 +490,9 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
 
     case "research:usage":
       return { ...state, usage: addUsage(state.usage, ev.usage) };
+
+    case "research:mechanics":
+      return { ...state, mechanics: ev.mechanics };
 
     case "research:error":
       return {

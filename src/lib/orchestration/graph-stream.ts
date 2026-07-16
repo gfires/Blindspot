@@ -389,6 +389,8 @@ async function runGraphStreamingInner(
   const tracker = getActiveCostTracker();
   const rollupUsages = tracker ? tracker.getUsages() : allLlmCalls;
   const tokens = rollupTokens(rollupUsages);
+  const mechanics = computeRunMechanics(trace.getEntries(), finalState, tokens);
+  send({ type: "research:mechanics", mechanics });
   const result = {
     arm: "orchestrated" as const,
     topic,
@@ -397,7 +399,7 @@ async function runGraphStreamingInner(
     firecrawlCalls: totalFirecrawlCalls,
     firecrawlCredits: totalFirecrawlCredits,
     durationMs: Date.now() - t0,
-    mechanics: computeRunMechanics(trace.getEntries(), finalState, tokens),
+    mechanics,
   };
 
   await writeTrace();

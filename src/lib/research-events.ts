@@ -3,6 +3,7 @@ import type { Evidence } from "./schemas/evidence";
 import type { Claim } from "./schemas/claim";
 import type { AnnotatedUsage } from "./orchestration/eval";
 import type { ResearchReport } from "./orchestration/graph";
+import type { RunMechanics } from "./orchestration/mechanics";
 
 export type ResearchPhase = "decompose" | "retrieve" | "debate" | "gate" | "recommend" | "done";
 
@@ -51,6 +52,10 @@ export type ResearchEvent =
   | { type: "recommend:begin" }
   | { type: "recommend:done"; report: ResearchReport }
   | { type: "research:usage"; usage: AnnotatedUsage }
+  // Terminal — the run-mechanics receipt (question-board-spec.md §6 Phase 5 / §7). computeRunMechanics
+  // already runs server-side after the stream (see ArmResult.mechanics); this just puts its output on
+  // the wire so the board can render it as the closing artifact instead of only via a batch run.
+  | { type: "research:mechanics"; mechanics: RunMechanics }
   | { type: "research:error"; message: string };
 
 export function researchPhaseFor(type: ResearchEvent["type"]): ResearchPhase {
@@ -82,6 +87,7 @@ export function researchPhaseFor(type: ResearchEvent["type"]): ResearchPhase {
     case "recommend:done":
       return "recommend";
     case "research:usage":
+    case "research:mechanics":
       return "recommend";
     case "research:error":
       return "done";

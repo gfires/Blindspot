@@ -4,6 +4,7 @@ import {
   formatMechanicsReport,
 } from "../../src/lib/orchestration/mechanics";
 import { toAnnotatedUsage, type ArmTokens } from "../../src/lib/orchestration/eval";
+import { runWithCostTracker } from "../../src/lib/orchestration/cost-tracker";
 import { MAX_RUN_COST_USD } from "../../src/lib/params";
 import type { TraceEntry } from "../../src/lib/orchestration/trace";
 import type { ResearchStateT, Question } from "../../src/lib/schemas/state";
@@ -372,6 +373,15 @@ describe("computeRunMechanics — convergence", () => {
     expect(m.convergence.totalCostUsd).toBe(1.0);
     expect(m.convergence.capUsd).toBe(MAX_RUN_COST_USD);
     expect(m.convergence.overCap).toBe(true);
+  });
+
+  it("reports the ACTIVE tracker's cap, not the MAX_RUN_COST_USD default, when overridden (e.g. --usd-budget)", async () => {
+    const withOverride = await runWithCostTracker(
+      async () => computeRunMechanics(fixtureEntries(), fixtureState(), makeTokens(1.0)),
+      0.15,
+    );
+    expect(withOverride.convergence.capUsd).toBe(0.15);
+    expect(withOverride.convergence.overCap).toBe(true); // $1.00 spent > $0.15 cap
   });
 });
 

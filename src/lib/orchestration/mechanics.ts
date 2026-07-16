@@ -19,6 +19,7 @@ import type { ResearchStateT } from "../schemas/state";
 import type { ResponseStanceT } from "../schemas/claim";
 import { extractContentions, committeeStance, type CommitteeStance } from "./debate";
 import { scopeEvidenceToQuestions } from "./graph";
+import { getActiveCostTracker } from "./cost-tracker";
 import { MAX_RUN_COST_USD } from "../params";
 
 /** The five buckets the LLM spend is grouped into for the search-vs-analyze headline. */
@@ -329,6 +330,10 @@ export function computeRunMechanics(
   const degraded =
     entriesOfType(safeEntries, "budget_exceeded").length > 0 ||
     entriesOfType(safeEntries, "recursion_limit").length > 0;
+  // The cap THIS run actually enforced — reads the live AsyncLocalStorage-scoped tracker (the
+  // same one gateShortCircuit's cost-headroom check reads) so a --usd-budget override is
+  // reflected here too, instead of always reporting the MAX_RUN_COST_USD default.
+  const capUsd = getActiveCostTracker()?.getCap() ?? MAX_RUN_COST_USD;
 
   return {
     retrieval: {
@@ -374,8 +379,8 @@ export function computeRunMechanics(
       reason,
       degraded,
       totalCostUsd,
-      capUsd: MAX_RUN_COST_USD,
-      overCap: totalCostUsd > MAX_RUN_COST_USD,
+      capUsd,
+      overCap: totalCostUsd > capUsd,
     },
   };
 }
@@ -403,7 +408,10 @@ export function formatMechanicsReport(m: RunMechanics): string {
   L.push("RETRIEVAL");
   L.push(
     `  evidence ${r.evidenceTotal} (${r.evidencePerCredit.toFixed(2)}/credit) · ` +
-      `firecrawl ${r.firecrawlCalls} calls / ${r.firecrawlCredits} credits ` +
+      // `firecrawlCalls`/`firecrawlCredits` are a legacy name (RunMechanics interface, not
+      // renamed here) — they total BOTH providers (SEARCH_PROVIDER=exa, SCRAPE_PROVIDER=firecrawl
+      // by default), so the printed line says "retrieval", never a specific vendor.
+      `retrieval ${r.firecrawlCalls} calls / ${r.firecrawlCredits} credits ` +
       `(${r.searchCredits} search / ${r.scrapeCredits} scrape) · ` +
       `${r.searchOps} search / ${r.scrapeOps} scrape / ${r.cacheHits} cache-hit${starvedFlag}`,
   );

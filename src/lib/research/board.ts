@@ -9,8 +9,9 @@
 import type { AgentRoleT, Claim } from "@/lib/schemas/claim";
 import type { Evidence } from "@/lib/schemas/evidence";
 import type { GateScore } from "@/lib/research-events";
-import type { GateDecision } from "@/lib/useResearchStream";
+import type { GateDecision, QuestionStatus } from "@/lib/useResearchStream";
 import { hasGenuineDisagreement, type CommitteeStance } from "@/lib/orchestration/debate";
+import { latestClaimsByRole } from "@/lib/research/arena";
 
 /** Source count gathered on loop 0 (the Recon cell). */
 export function reconCount(evidence: Evidence[]): number {
@@ -22,6 +23,17 @@ export function claimsByRole(claims: Claim[]): Partial<Record<AgentRoleT, Claim>
   const result: Partial<Record<AgentRoleT, Claim>> = {};
   for (const c of claims) result[c.agentRole] = c;
   return result;
+}
+
+/**
+ * The committee's CURRENT position for a question — one claim per role, each role's most recent
+ * (highest `loopIteration`) claim. Feed this into `committeeStance`/stance-derived cells, never the
+ * raw accumulated `claimsByQuestion` array: that array holds every loop's final claims, and unioning
+ * stances across loops can manufacture a spurious "contested" read for a question that was contested
+ * early but converged to a unanimous lean by its latest loop.
+ */
+export function currentCommitteeClaims(claims: Claim[], questionId: string): Claim[] {
+  return Object.values(latestClaimsByRole(claims, questionId)).filter((c): c is Claim => c != null);
 }
 
 /** The Openings cell's "→" resolution: no claims yet, unanimous, or a genuine split. */
@@ -59,16 +71,37 @@ export function scopeGateDecisionsToQuestion(
   }));
 }
 
-export type GateVerdict = "pending" | "settled" | "fault-line" | "retrieve";
+export type GateVerdict = "pending" | "settled" | "fault-line" | "limitation" | "retrieve";
 
 /**
- * The Gate cell's route verdict — derived from the REAL gate decision (`retrieve`), not
- * re-guessed: a question the gate sent back to retrieval is "retrieve"; one it resolved is
- * "settled" unless the committee stance was `"contested"`, in which case it's a reported fault
- * line rather than a confident answer.
+ * The Gate cell's route verdict — derived from the REAL gate decision (`retrieve`) plus the
+ * committee's stance, mirroring gate.ts's own three-way resolve reasoning (questionRoute/
+ * routeReason) rather than collapsing every resolve into "settled":
+ * - the gate sent it back to retrieval → "retrieve"
+ * - resolved + `"contested"` → a reported fault line, not a confident answer
+ * - resolved + `"insufficient"` → a LIMITATION (no chase-able gap, or diminishing returns already
+ *   gave up on it) — the committee never reached a directional call, so this is not "settled" either
+ * - resolved + a unanimous decisive lean (`supports`/`opposes`) → "settled", the only confident case
  */
 export function gateVerdict(score: GateScore | undefined, stance: CommitteeStance): GateVerdict {
   if (!score) return "pending";
   if (score.retrieve) return "retrieve";
-  return stance === "contested" ? "fault-line" : "settled";
+  if (stance === "contested") return "fault-line";
+  if (stance === "insufficient") return "limitation";
+  return "settled";
+}
+
+/**
+ * The Deliberation cell's label. `debateOutcome === "skipped"` means the GRAPH didn't re-run this
+ * question's committee this loop (no fresh evidence arrived — see debate:begin) — reuse of a prior
+ * loop's claim, not the spec's hero "openings agreed" case. That case is `debateOutcome ===
+ * "debated"` with `debateRounds === 0` AND the committee has actually finished — while still
+ * `status === "debating"` with 0 rounds, openings are simply still arriving.
+ */
+export function deliberationLabel(q: Pick<QuestionStatus, "debateOutcome" | "debateRounds" | "status">): string {
+  if (q.debateOutcome === "pending") return "—";
+  if (q.debateOutcome === "skipped") return "↻ reused prior claim — no fresh evidence this loop";
+  if (q.debateRounds > 0) return `🗣 debated ${q.debateRounds} round${q.debateRounds === 1 ? "" : "s"}`;
+  if (q.status === "debating") return "🗣 opening...";
+  return "⚡ skipped — unanimous, no genuine disagreement";
 }

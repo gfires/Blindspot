@@ -213,7 +213,11 @@ async function runGraphStreamingInner(
             budgetRemaining += (output.budgetRemaining ?? 0) as number;
 
             for (const ev of evidence) {
-              send({ type: "retrieve:evidence", evidence: ev, questionId: ev.sourceQuery });
+              // Prefer the real question id (agentic arm tags every Evidence with it — see
+              // researcher.ts) over sourceQuery, mirroring scopeEvidenceToQuestions's own identity-
+              // first scoping. Without this, evidenceByQuestion keys on the raw search query text
+              // and the board's per-question Recon/Loop cells never match a question id.
+              send({ type: "retrieve:evidence", evidence: ev, questionId: ev.questionId ?? ev.sourceQuery });
             }
 
             send({

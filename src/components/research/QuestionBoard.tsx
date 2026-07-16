@@ -4,13 +4,15 @@ import { useEffect, useRef, useState } from "react";
 import type { ResearchUIState, QuestionStatus } from "@/lib/useResearchStream";
 import type { AgentRoleT, Claim } from "@/lib/schemas/claim";
 import { committeeStance } from "@/lib/orchestration/debate";
-import { latestClaimsByRole, confidenceColor as barColor } from "@/lib/research/arena";
+import { confidenceColor as barColor } from "@/lib/research/arena";
 import {
   reconCount,
   claimsByRole as indexClaimsByRole,
+  currentCommitteeClaims,
   latestGateScoreFor,
   gateVerdict,
   scopeGateDecisionsToQuestion,
+  deliberationLabel,
   type GateVerdict,
 } from "@/lib/research/board";
 import { PipelineMinimap } from "./PipelineMinimap";
@@ -41,6 +43,7 @@ const GATE_VERDICT_STYLE: Record<GateVerdict, { label: string; cls: string }> = 
   pending: { label: "—", cls: "text-mute" },
   settled: { label: "✔ settled", cls: "text-accent" },
   "fault-line": { label: "⚡ fault line", cls: "text-amber" },
+  limitation: { label: "⚠ limitation", cls: "text-mute" },
   retrieve: { label: "↻ retrieve +gap", cls: "text-amber" },
 };
 
@@ -80,14 +83,7 @@ function fmtMs(ms: number): string {
 function openingClaimsFor(state: ResearchUIState, qid: string): Claim[] {
   const openings = state.openingsByQuestion[qid];
   if (openings && openings.length > 0) return openings;
-  const claims = state.claimsByQuestion[qid] ?? [];
-  return Object.values(latestClaimsByRole(claims, qid)).filter((c): c is Claim => c != null);
-}
-
-function deliberationLabel(q: QuestionStatus): string {
-  if (q.debateOutcome === "pending") return "—";
-  if (q.debateOutcome === "skipped") return "⚡ skipped — unanimous, no genuine disagreement";
-  return q.debateRounds > 0 ? `🗣 debated ${q.debateRounds} round${q.debateRounds === 1 ? "" : "s"}` : "🗣 opening...";
+  return currentCommitteeClaims(state.claimsByQuestion[qid] ?? [], qid);
 }
 
 interface CellProps {
@@ -121,7 +117,9 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
   const evidence = state.evidenceByQuestion[qid] ?? [];
   const claims = state.claimsByQuestion[qid] ?? [];
   const openingClaimsByRole = indexClaimsByRole(openingClaimsFor(state, qid));
-  const stance = committeeStance(claims);
+  // The committee's CURRENT position, not every loop's accumulated claims — else a question
+  // contested early but converged to a unanimous lean by its latest loop still reads "contested".
+  const stance = committeeStance(currentCommitteeClaims(claims, qid));
   const gateScore = latestGateScoreFor(state.gateDecisions, qid);
   const verdict = gateVerdict(gateScore, stance);
   const verdictStyle = GATE_VERDICT_STYLE[verdict];

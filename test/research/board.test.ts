@@ -2,9 +2,11 @@ import { describe, it, expect } from "vitest";
 import {
   reconCount,
   openingResolution,
+  currentCommitteeClaims,
   latestGateScoreFor,
   gateVerdict,
   scopeGateDecisionsToQuestion,
+  deliberationLabel,
 } from "@/lib/research/board";
 import type { Claim } from "@/lib/schemas/claim";
 import type { Evidence } from "@/lib/schemas/evidence";
@@ -121,6 +123,49 @@ describe("latestGateScoreFor / gateVerdict", () => {
     expect(gateVerdict({ questionId: "q1", retrieve: false, gapCount: 0, confidenceSpread: 0, reason: "" }, "supports")).toBe(
       "settled",
     );
+  });
+
+  it("verdict is limitation (not settled) for a resolved insufficient stance — no confident call was made", () => {
+    expect(
+      gateVerdict({ questionId: "q1", retrieve: false, gapCount: 0, confidenceSpread: 0, reason: "" }, "insufficient"),
+    ).toBe("limitation");
+  });
+});
+
+describe("deliberationLabel", () => {
+  it("is a dash before the first debate:begin", () => {
+    expect(deliberationLabel({ debateOutcome: "pending", debateRounds: 0, status: "pending" })).toBe("—");
+  });
+
+  it("reads as reused (not agreement) when the graph didn't re-run this loop", () => {
+    expect(deliberationLabel({ debateOutcome: "skipped", debateRounds: 0, status: "looping" })).toMatch(/reused/);
+  });
+
+  it("reads as still-opening while the committee is mid-run with no rounds yet", () => {
+    expect(deliberationLabel({ debateOutcome: "debated", debateRounds: 0, status: "debating" })).toMatch(/opening/);
+  });
+
+  it("reads as the hero 'skipped on agreement' case once the committee has finished with 0 rounds", () => {
+    const label = deliberationLabel({ debateOutcome: "debated", debateRounds: 0, status: "resolved" });
+    expect(label).toMatch(/unanimous/);
+  });
+
+  it("reads as debated N rounds once conversational rounds ran", () => {
+    expect(deliberationLabel({ debateOutcome: "debated", debateRounds: 2, status: "debating" })).toBe("🗣 debated 2 rounds");
+  });
+});
+
+describe("currentCommitteeClaims", () => {
+  it("picks each role's latest (highest loopIteration) claim, not the full history", () => {
+    const claims = [
+      makeClaim({ agentRole: "historian", stance: "opposes", loopIteration: 0 }),
+      makeClaim({ agentRole: "skeptic", stance: "supports", loopIteration: 0 }),
+      // loop 1: the committee converged — historian flipped to agree with the skeptic
+      makeClaim({ agentRole: "historian", stance: "supports", loopIteration: 1 }),
+    ];
+    const current = currentCommitteeClaims(claims, "q1");
+    expect(current).toHaveLength(2);
+    expect(current.every((c) => c.stance === "supports")).toBe(true);
   });
 });
 

@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ResearchUIState, QuestionStatus } from "@/lib/useResearchStream";
-import type { AgentRoleT } from "@/lib/schemas/claim";
+import type { AgentRoleT, Claim } from "@/lib/schemas/claim";
 import { committeeStance } from "@/lib/orchestration/debate";
 import { latestClaimsByRole, confidenceColor as barColor } from "@/lib/research/arena";
 import {
   reconCount,
+  claimsByRole as indexClaimsByRole,
   latestGateScoreFor,
   gateVerdict,
   scopeGateDecisionsToQuestion,
@@ -71,6 +72,17 @@ function fmtMs(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
+/**
+ * The Openings cell's claims: the real round-0 blind opening once §3c events have arrived, else
+ * (Phase 1 fallback) the latest claim per role from whatever's streamed so far.
+ */
+function openingClaimsFor(state: ResearchUIState, qid: string): Claim[] {
+  const openings = state.openingsByQuestion[qid];
+  if (openings && openings.length > 0) return openings;
+  const claims = state.claimsByQuestion[qid] ?? [];
+  return Object.values(latestClaimsByRole(claims, qid)).filter((c): c is Claim => c != null);
+}
+
 function deliberationLabel(q: QuestionStatus): string {
   if (q.debateOutcome === "pending") return "—";
   if (q.debateOutcome === "skipped") return "⚡ skipped — unanimous, no genuine disagreement";
@@ -107,7 +119,7 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
   const s = STATUS_STYLE[q.status];
   const evidence = state.evidenceByQuestion[qid] ?? [];
   const claims = state.claimsByQuestion[qid] ?? [];
-  const claimsByRole = latestClaimsByRole(claims, qid);
+  const openingClaimsByRole = indexClaimsByRole(openingClaimsFor(state, qid));
   const stance = committeeStance(claims);
   const gateScore = latestGateScoreFor(state.gateDecisions, qid);
   const verdict = gateVerdict(gateScore, stance);
@@ -154,7 +166,7 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
 
       {/* Openings */}
       <Cell active={isDrilled("openings")} onClick={() => onToggle(qid, "openings")}>
-        <StanceDots claimsByRole={claimsByRole} />
+        <StanceDots claimsByRole={openingClaimsByRole} />
       </Cell>
 
       {/* Deliberation */}
@@ -190,8 +202,7 @@ interface DrillDownPanelProps {
 
 function DrillDownPanel({ drill, state, onClose }: DrillDownPanelProps) {
   const { questionId, stage } = drill;
-  const claims = state.claimsByQuestion[questionId] ?? [];
-  const claimsByRole = latestClaimsByRole(claims, questionId);
+  const openingClaimsByRole = indexClaimsByRole(openingClaimsFor(state, questionId));
 
   return (
     <div className="panel space-y-3 p-4">
@@ -208,8 +219,8 @@ function DrillDownPanel({ drill, state, onClose }: DrillDownPanelProps) {
         <EvidenceFeed evidence={state.evidenceByQuestion[questionId] ?? []} loopIteration={state.loopIteration} />
       ) : stage === "openings" ? (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          {(Object.keys(claimsByRole) as AgentRoleT[]).map((role) => {
-            const claim = claimsByRole[role];
+          {(Object.keys(openingClaimsByRole) as AgentRoleT[]).map((role) => {
+            const claim = openingClaimsByRole[role];
             if (!claim) return null;
             return (
               <div key={role} className="rounded border border-line bg-panel2 p-2.5 space-y-1.5">
@@ -222,7 +233,7 @@ function DrillDownPanel({ drill, state, onClose }: DrillDownPanelProps) {
               </div>
             );
           })}
-          {Object.keys(claimsByRole).length === 0 && (
+          {Object.keys(openingClaimsByRole).length === 0 && (
             <p className="text-xs text-mute">awaiting openings...</p>
           )}
         </div>
@@ -236,7 +247,12 @@ function DrillDownPanel({ drill, state, onClose }: DrillDownPanelProps) {
             activeQuestionId={questionId}
             onSelectQuestion={() => {}}
           />
-          <AgentSwimlane claimsByQuestion={state.claimsByQuestion} activeQuestionId={questionId} activeNode={state.activeNode} />
+          <AgentSwimlane
+            openings={state.openingsByQuestion[questionId] ?? []}
+            rounds={state.roundsByQuestion[questionId] ?? []}
+            questionId={questionId}
+            activeNode={state.activeNode}
+          />
         </div>
       ) : (
         <GateDecisionPanel decisions={scopeGateDecisionsToQuestion(state.gateDecisions, questionId)} />

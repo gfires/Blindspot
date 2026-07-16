@@ -6,7 +6,7 @@
  * recomputing cell logic inline, so the derivation is unit-testable without a browser (per the
  * project's "reducer logic is pure and unit-testable" discipline).
  */
-import type { Claim } from "@/lib/schemas/claim";
+import type { AgentRoleT, Claim } from "@/lib/schemas/claim";
 import type { Evidence } from "@/lib/schemas/evidence";
 import type { GateScore } from "@/lib/research-events";
 import type { GateDecision } from "@/lib/useResearchStream";
@@ -15,6 +15,13 @@ import { hasGenuineDisagreement, type CommitteeStance } from "@/lib/orchestratio
 /** Source count gathered on loop 0 (the Recon cell). */
 export function reconCount(evidence: Evidence[]): number {
   return evidence.filter((e) => e.loopIteration === 0).length;
+}
+
+/** Index an already-scoped (one question) claim list by role, last occurrence wins. */
+export function claimsByRole(claims: Claim[]): Partial<Record<AgentRoleT, Claim>> {
+  const result: Partial<Record<AgentRoleT, Claim>> = {};
+  for (const c of claims) result[c.agentRole] = c;
+  return result;
 }
 
 /** The Openings cell's "→" resolution: no claims yet, unanimous, or a genuine split. */

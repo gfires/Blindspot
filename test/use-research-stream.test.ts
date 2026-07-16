@@ -79,3 +79,57 @@ describe("reduce — debateOutcome / debateRounds (board spec §3b)", () => {
     expect(q1.debateRounds).toBe(2);
   });
 });
+
+describe("reduce — debate:opening / debate:round (board spec §3c)", () => {
+  it("accumulates openings for the same question within one loop", () => {
+    let s = initialResearchState;
+    s = reduce(s, { type: "debate:opening", claim: makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 0 }) });
+    s = reduce(s, { type: "debate:opening", claim: makeClaim({ agentRole: "operator", questionId: "q1", loopIteration: 0 }) });
+    expect(s.openingsByQuestion.q1).toHaveLength(2);
+  });
+
+  it("replaces (not appends) once a new loop's openings arrive", () => {
+    let s = initialResearchState;
+    s = reduce(s, { type: "debate:opening", claim: makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 0 }) });
+    s = reduce(s, { type: "debate:opening", claim: makeClaim({ agentRole: "operator", questionId: "q1", loopIteration: 0 }) });
+    s = reduce(s, { type: "debate:opening", claim: makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 1 }) });
+    expect(s.openingsByQuestion.q1).toHaveLength(1);
+    expect(s.openingsByQuestion.q1[0].loopIteration).toBe(1);
+  });
+
+  it("accumulates conversational rounds for the same question within one loop", () => {
+    let s = initialResearchState;
+    s = reduce(s, {
+      type: "debate:round",
+      questionId: "q1",
+      round: 1,
+      claims: [makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 0, debateRound: 1 })],
+    });
+    s = reduce(s, {
+      type: "debate:round",
+      questionId: "q1",
+      round: 2,
+      claims: [makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 0, debateRound: 2 })],
+    });
+    expect(s.roundsByQuestion.q1).toHaveLength(2);
+    expect(s.roundsByQuestion.q1.map((r) => r.round)).toEqual([1, 2]);
+  });
+
+  it("replaces rounds once a new loop's rounds arrive", () => {
+    let s = initialResearchState;
+    s = reduce(s, {
+      type: "debate:round",
+      questionId: "q1",
+      round: 1,
+      claims: [makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 0, debateRound: 1 })],
+    });
+    s = reduce(s, {
+      type: "debate:round",
+      questionId: "q1",
+      round: 1,
+      claims: [makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 1, debateRound: 1 })],
+    });
+    expect(s.roundsByQuestion.q1).toHaveLength(1);
+    expect(s.roundsByQuestion.q1[0].claims[0].loopIteration).toBe(1);
+  });
+});

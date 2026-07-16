@@ -63,6 +63,11 @@ export interface ResearchUIState {
   evidenceByQuestion: Record<string, Evidence[]>;
   claims: Claim[];
   claimsByQuestion: Record<string, Claim[]>;
+  /** Round-0 blind-opening claims per question (§3c) — replaced (not appended) when a question's
+   *  committee re-runs on a later loop, detected via the claim's `loopIteration`. */
+  openingsByQuestion: Record<string, Claim[]>;
+  /** Conversational rounds (round >= 1) per question, for the deliberation drill-down timeline. */
+  roundsByQuestion: Record<string, { round: number; claims: Claim[] }[]>;
   gateDecisions: GateDecision[];
   usage: ResearchUsage;
   trace: string[];
@@ -83,6 +88,8 @@ export const initialResearchState: ResearchUIState = {
   evidenceByQuestion: {},
   claims: [],
   claimsByQuestion: {},
+  openingsByQuestion: {},
+  roundsByQuestion: {},
   gateDecisions: [],
   usage: {
     calls: [],
@@ -290,6 +297,38 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
           `$ digested ${ev.evidenceCount} sources for ${ev.questionId} (loop ${ev.loopIteration})`,
         ],
       };
+
+    case "debate:opening": {
+      // Replace (not append) once a NEW loop's openings start arriving for this question — a
+      // transcript is ephemeral to one evidence snapshot (mirrors the graph's mergeTranscripts),
+      // detected mechanically off the claim's `loopIteration`, never guessed.
+      const qid = ev.claim.questionId;
+      const existing = state.openingsByQuestion[qid] ?? [];
+      const sameLoop = existing.length > 0 && existing[0].loopIteration === ev.claim.loopIteration;
+      return {
+        ...state,
+        phase,
+        openingsByQuestion: {
+          ...state.openingsByQuestion,
+          [qid]: sameLoop ? [...existing, ev.claim] : [ev.claim],
+        },
+      };
+    }
+
+    case "debate:round": {
+      const existing = state.roundsByQuestion[ev.questionId] ?? [];
+      const sameLoop = existing.length > 0 && existing[0].claims[0]?.loopIteration === ev.claims[0]?.loopIteration;
+      return {
+        ...state,
+        phase,
+        roundsByQuestion: {
+          ...state.roundsByQuestion,
+          [ev.questionId]: sameLoop
+            ? [...existing, { round: ev.round, claims: ev.claims }]
+            : [{ round: ev.round, claims: ev.claims }],
+        },
+      };
+    }
 
     case "debate:claim": {
       const newClaims = [...state.claims, ev.claim];

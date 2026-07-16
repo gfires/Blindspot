@@ -93,20 +93,25 @@ describe("createLimiter", () => {
 });
 
 describe("modelForRole", () => {
-  it("uses Sonnet for the 3 analytical roles on loop 0, Haiku on a re-debate", () => {
-    for (const role of ["historian", "operator", "investor"] as const) {
-      expect(modelForRole(role, 0).modelId).toBe("claude-sonnet-5");
-      expect(modelForRole(role, 1).modelId).toBe("claude-haiku-4-5-20251001");
+  it("keeps historian/operator on gpt-5.4-mini across loops (already at their cheap tier)", () => {
+    for (const role of ["historian", "operator"] as const) {
+      expect(modelForRole(role, 0).modelId).toBe("gpt-5.4-mini");
+      expect(modelForRole(role, 1).modelId).toBe("gpt-5.4-mini");
     }
   });
 
-  it("keeps the skeptic on gpt-4o across every loop", () => {
-    expect(modelForRole("skeptic", 0).modelId).toBe("gpt-4o");
-    expect(modelForRole("skeptic", 1).modelId).toBe("gpt-4o");
-    expect(modelForRole("skeptic", 3).modelId).toBe("gpt-4o");
+  it("drops investor from Sonnet on loop 0 to Haiku on a re-debate", () => {
+    expect(modelForRole("investor", 0).modelId).toBe("claude-sonnet-5");
+    expect(modelForRole("investor", 1).modelId).toBe("claude-haiku-4-5-20251001");
+  });
+
+  it("keeps the skeptic on Gemini 3.1 Flash-Lite across every loop", () => {
+    expect(modelForRole("skeptic", 0).modelId).toBe("gemini-3.1-flash-lite");
+    expect(modelForRole("skeptic", 1).modelId).toBe("gemini-3.1-flash-lite");
+    expect(modelForRole("skeptic", 3).modelId).toBe("gemini-3.1-flash-lite");
   });
 
   it("defaults to the loop-0 mix when no loop iteration is given", () => {
-    expect(modelForRole("historian").modelId).toBe("claude-sonnet-5");
+    expect(modelForRole("investor").modelId).toBe("claude-sonnet-5");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
-import { FIRECRAWL_CONCURRENCY } from "@/lib/params";
+import { PROVIDER_CONCURRENCY } from "@/lib/evidence/config";
 
 // Shared in-flight counter the mocked Firecrawl client updates on every network call.
 const h = vi.hoisted(() => ({ inFlight: 0, maxInFlight: 0, searches: 0, scrapes: 0 }));
@@ -56,14 +56,14 @@ beforeEach(() => {
 });
 
 describe("firecrawl search() concurrency", () => {
-  it("never exceeds FIRECRAWL_CONCURRENCY simultaneous Firecrawl calls", async () => {
+  it("never exceeds PROVIDER_CONCURRENCY.firecrawl simultaneous Firecrawl calls", async () => {
     // 5 queries × 2 hits = 10 URLs to scrape — far more than the cap, so an unbounded
-    // fan-out would peak well above FIRECRAWL_CONCURRENCY.
+    // fan-out would peak well above PROVIDER_CONCURRENCY.firecrawl.
     await search(["q1", "q2", "q3", "q4", "q5"], 6, 0);
 
     expect(h.searches).toBe(5); // all searches ran…
     expect(h.scrapes).toBeGreaterThan(0); // …and scrapes happened
     expect(h.maxInFlight).toBeGreaterThan(0);
-    expect(h.maxInFlight).toBeLessThanOrEqual(FIRECRAWL_CONCURRENCY);
+    expect(h.maxInFlight).toBeLessThanOrEqual(PROVIDER_CONCURRENCY.firecrawl);
   });
 });

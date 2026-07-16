@@ -20,7 +20,8 @@ import { z } from "zod";
 import { makeOpenAI, REPORT_SECTIONS } from "./analyze";
 import { buildIntents, normalizeIndustry, type Intent } from "./intents";
 import { clamp, domainOf } from "./format";
-import { TRIAGE_MODEL, SEARCH_INTENTS } from "./params";
+import { TRIAGE_MODEL } from "./params";
+import { SEARCH_INTENTS } from "./evidence/config";
 import type { Source } from "./schema";
 import type { TokenUsage } from "./events";
 

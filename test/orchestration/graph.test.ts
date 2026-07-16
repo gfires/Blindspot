@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { compileResearchGraph, synthesizeReport, computeRecursionLimit, resultsPerQuestionForLoop, routeAfterGate } from "@/lib/orchestration/graph";
-import { RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION, MAX_LOOP_ITERATIONS } from "@/lib/params";
+import { MAX_LOOP_ITERATIONS } from "@/lib/params";
+import { RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION } from "@/lib/evidence/config";
 import { accumulate } from "@/lib/schemas/state";
 import { fallbackBrief } from "@/lib/schemas/brief";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";

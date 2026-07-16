@@ -35,10 +35,11 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel, gateModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, estimateCostUsd } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, MAX_SEARCH_QUERIES_PER_QUESTION, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES, resultsPerQuestionForLoop } from "../params";
+import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
+import { MAX_SEARCH_QUERIES_PER_QUESTION, resultsPerQuestionForLoop } from "../evidence/config";
 // Re-exported so existing importers (e.g. graph.test.ts) keep resolving it here. The function itself
-// lives in params.ts so researcher.ts can import it for its per-pass evidence ceiling without a
-// circular import back into graph.ts.
+// lives in evidence/config.ts so researcher.ts can import it for its per-pass evidence ceiling
+// without a circular import back into graph.ts.
 export { resultsPerQuestionForLoop };
 import { getActiveTrace, startTrace } from "./trace";
 import { getActiveCostTracker, runWithCostTracker, BudgetExceededError } from "./cost-tracker";
@@ -48,7 +49,7 @@ import { intakePrompt, decomposePrompt, answerPrompt, researcherReconMission, re
 
 // --- Cross-agent integration imports (implemented on sibling branches) ---------
 // evidence/firecrawl.ts: batch web search (queries, k, loop) → tagged Evidence.
-import { search } from "../evidence/firecrawl";
+import { search } from "../evidence/provider";
 // committee.ts: run the multi-role committee as a debate over a question + evidence → Claims +
 // transcript. (committee derives the loop iteration from the evidence's own loopIteration.)
 import { runDebate, splitEvidence } from "./committee";

@@ -12,7 +12,7 @@ import type { ArmResult } from "./eval";
 import { computeRunMechanics } from "./mechanics";
 import type { ResearchStateT, Question, RetrievalMode } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
-import type { SearchProgress } from "../evidence/firecrawl";
+import type { SearchProgress } from "../evidence/provider";
 import type { Claim } from "../schemas/claim";
 import type { DigestItem } from "./digest";
 import type { ResearcherProgress } from "./researcher";

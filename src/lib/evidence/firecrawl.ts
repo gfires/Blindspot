@@ -26,7 +26,18 @@ import { domainOf, truncate } from "../format";
 import { loadBlocklist, blocklistKey, isHardBlock, recordBlock } from "../blocklist";
 import { getCache, setCache } from "../scrape-cache";
 import { getSearchCache, setSearchCache } from "../search-cache";
-import { MAX_CHARS_PER_PAGE, SCRAPE_TIMEOUT_MS, SCRAPE_CONCURRENCY, RESULTS_PER_INTENT, MAX_SCRAPE, QUOTA_FLOOR, SEARCH_CANDIDATES_PER_QUESTION, FIRECRAWL_CONCURRENCY, TRIAGE_ENABLED, MIN_TRIAGE_SCORE } from "../params";
+import {
+  MAX_CHARS_PER_PAGE,
+  SCRAPE_TIMEOUT_MS,
+  SCRAPE_CONCURRENCY,
+  RESULTS_PER_INTENT,
+  MAX_SCRAPE,
+  QUOTA_FLOOR,
+  SEARCH_CANDIDATES_PER_QUESTION,
+  PROVIDER_CONCURRENCY,
+  TRIAGE_ENABLED,
+  MIN_TRIAGE_SCORE,
+} from "./config";
 import { makeIntents, scoreCandidates, selectSources, triageModel, UNSCORED, type Candidate, type TriageScore } from "../triage";
 import { type Evidence, contentHash } from "./store";
 import { getActiveTrace } from "../orchestration/trace";
@@ -34,12 +45,12 @@ import { createLimiter } from "../orchestration/limiter";
 
 /**
  * One shared FIFO queue for EVERY Firecrawl network call — searches and scrapes alike,
- * across all questions and both arms. Firecrawl throttles to ~FIRECRAWL_CONCURRENCY
+ * across all questions and both arms. Firecrawl throttles to ~PROVIDER_CONCURRENCY.firecrawl
  * simultaneous requests per account; funnelling every call through this limiter keeps us
  * under that ceiling so bursts don't turn into 429s / timeouts. Module-level so concurrent
  * runs (e.g. compare-arms running both arms) still share the one account-wide budget.
  */
-const firecrawlLimiter = createLimiter(FIRECRAWL_CONCURRENCY);
+const firecrawlLimiter = createLimiter(PROVIDER_CONCURRENCY.firecrawl);
 
 
 /** A search hit before it's promoted to a citable Source. */
@@ -309,9 +320,9 @@ interface RankedSource {
  * 2–5s alone balloon to 10–15s and cross the timeout, producing FALSE failures (measured; see
  * SCRAPE_TIMEOUT_MS). SCRAPE_CONCURRENCY workers pull from a shared cursor (`next`) into `ranked`;
  * each worker grabs the next index, scrapes it to completion, then grabs another until the queue
- * drains. The true network cap is now the shared `firecrawlLimiter` (FIRECRAWL_CONCURRENCY) that
+ * drains. The true network cap is now the shared `firecrawlLimiter` (PROVIDER_CONCURRENCY.firecrawl) that
  * wraps the scrapeUrl call itself — the worker pool just overlaps cache lookups and setup ahead of
- * it, so no scrape sits idle. Total scrape wall-clock ≈ ceil(N / FIRECRAWL_CONCURRENCY) × page-latency.
+ * it, so no scrape sits idle. Total scrape wall-clock ≈ ceil(N / PROVIDER_CONCURRENCY.firecrawl) × page-latency.
  *
  * Never throws; results preserve input order (worker writes to results[i]).
  */

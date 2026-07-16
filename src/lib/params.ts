@@ -4,33 +4,14 @@
  * Baseline pipeline params (search → triage → scrape → analyze) are at the top.
  * Orchestration params (decompose → retrieve → debate → gate loop) are below.
  */
-import type { AgentRoleT } from "./schemas/claim";
-
 // -- Baseline: models --------------------------------------------------------
 
 export const ANALYSIS_MODEL        = "gpt-4o";
 export const TRIAGE_MODEL          = "gpt-4o-mini";
 
-// -- Baseline: search --------------------------------------------------------
-
-export const SEARCH_INTENTS        = 8;
-export const RESULTS_PER_INTENT    = 8;
-
-// -- Baseline: triage / selection --------------------------------------------
-
-export const MAX_SCRAPE            = 22;
-export const QUOTA_FLOOR           = 2;
-
-// -- Baseline: scrape --------------------------------------------------------
-
-export const MAX_CHARS_PER_PAGE    = 4500;
-export const SCRAPE_TIMEOUT_MS     = 20_000;
-export const SCRAPE_CONCURRENCY    = 6;
-
-// Firecrawl throttles to ~2 simultaneous requests per account, so EVERY Firecrawl call
-// (search and scrape, across all questions and both arms) funnels through one shared FIFO
-// queue of this size. Exceeding it yields 429s / timeouts that read as false scrape failures.
-export const FIRECRAWL_CONCURRENCY  = 2;
+// Search/scrape tunables (intents, scrape depth, triage, provider concurrency, and the
+// SEARCH_PROVIDER selector) now live in evidence/config.ts — provider-agnostic retrieval
+// mechanics, not orchestration/gate policy. Import from there, not here.
 
 // -- Orchestration: intake ---------------------------------------------------
 
@@ -44,46 +25,9 @@ export const MIN_QUESTIONS         = 3;
 // 4 covers a go/no-go's core facets while keeping loop-0 retrieval spend low enough that a second
 // loop fits under the Firecrawl budget (5 questions × 2 queries blew the whole budget in one loop).
 export const MAX_QUESTIONS         = 4;
-// Keyword search queries decompose emits per question (used verbatim by retrieve instead of the
-// full question sentence, which searches poorly). ONE broad query per question at loop 0 halves
-// search spend; refine adds a sharper gap-targeted query on loop 1. Clamped in code (no schema max).
-export const MAX_SEARCH_QUERIES_PER_QUESTION = 1;
-
-// -- Orchestration: retrieve -------------------------------------------------
-
-export const RESULTS_PER_QUESTION  = 6;
-// Loop-0 reconnaissance depth (layer 2): the broad first pass scrapes FEWER results per query than
-// the later gap-targeted passes. Marginal value of evidence is inverted against depth — on loop 0 you
-// don't yet know what's missing, so each page buys generic coverage; after a debate the committee has
-// NAMED the gap, so a targeted scrape buys exactly what would move a position. Loop 0 is therefore
-// reconnaissance: just enough to seed grounded round-0 claims and let the committee name its gaps.
-// GROUNDING FLOOR — do NOT drop below 3: thin evidence historically caused a "historian confabulation"
-// bug (roles claiming about evidence that isn't there and mis-calibrating their missingEvidence), so
-// recon must stay deep enough that round-0 claims and their named gaps are trustworthy.
-export const RECON_RESULTS_PER_QUESTION = 3;
-export const SEARCH_CANDIDATES_PER_QUESTION = 10;
-
-/**
- * Results scraped per query for a given outer loop (layer 2): shallow RECONNAISSANCE on loop 0
- * (RECON_RESULTS_PER_QUESTION), full depth (RESULTS_PER_QUESTION) on every later, gap-targeted pass.
- * Loop 0 doesn't yet know what's missing, so each page buys generic coverage — scrape just enough to
- * seed grounded round-0 claims and let the committee name its gaps; once a gap is named, the targeted
- * passes go deep where the marginal value is high. See RECON_RESULTS_PER_QUESTION for the grounding floor.
- *
- * Lives here (not in graph.ts) so the agentic researcher can import it for its per-pass evidence
- * CEILING without a circular import (graph.ts → researcher.ts); graph.ts re-exports it for callers.
- */
-export function resultsPerQuestionForLoop(loopIteration: number): number {
-  return loopIteration === 0 ? RECON_RESULTS_PER_QUESTION : RESULTS_PER_QUESTION;
-}
-
-// Relevance triage (orchestrated retrieve): one cheap gpt-4o-mini call scores every deduped search
-// candidate 0–10 for relevance BEFORE scraping, so off-topic hits (a bad query's marketing/biotech
-// junk) are dropped instead of scraped and fed to the committee. TRIAGE_ENABLED=false falls back to
-// the rank-based per-query cap (capCandidatesPerQuery). MIN_TRIAGE_SCORE is the keep bar; it sits
-// BELOW the UNSCORED default (5) so a triage failure degrades to pure rank-cap, never over-filters.
-export const TRIAGE_ENABLED        = true;
-export const MIN_TRIAGE_SCORE      = 4;
+// Search query shape (MAX_SEARCH_QUERIES_PER_QUESTION) and retrieve-loop depth
+// (RESULTS_PER_QUESTION, RECON_RESULTS_PER_QUESTION, resultsPerQuestionForLoop, triage) now live
+// in evidence/config.ts alongside the rest of the retrieval tunables.
 
 // -- Orchestration: gate / budget --------------------------------------------
 
@@ -142,35 +86,12 @@ export const MAX_DIGEST_SUMMARY_CHARS = 400;
 // attaching when the prefix is large enough to matter — below this many chars, skip it.
 export const PROMPT_CACHE_MIN_CHARS  = 4500;
 
-// -- Orchestration: committee model mix (L4) ---------------------------------
-
-// Per-role model ids. Loop 0 (the first, deepest debate) runs the three analytical roles
-// on Sonnet; re-debates (loopIteration > 0) drop them to Haiku, since a re-debate only
-// revises a prior claim against a small evidence delta. The skeptic stays on gpt-4o
-// everywhere — a genuinely different model family is the point of the adversarial check.
-// Every id here must exist in eval.ts MODEL_COST or its cost estimates as $0.
-export const ROLE_MODEL_IDS: Record<AgentRoleT, string> = {
-  historian: "claude-sonnet-5",
-  operator:  "claude-sonnet-5",
-  investor:  "claude-sonnet-5",
-  skeptic:   "gpt-4o",
-};
-export const REDEBATE_ROLE_MODEL_IDS: Record<AgentRoleT, string> = {
-  historian: "claude-haiku-4-5-20251001",
-  operator:  "claude-haiku-4-5-20251001",
-  investor:  "claude-haiku-4-5-20251001",
-  skeptic:   "gpt-4o",
-};
-
 // -- Orchestration: debate (inner loop, Wave 3) ------------------------------
 
 // The committee is a real debate, not a poll: round 0 is the independent opening, then
 // conversational rounds until positions stop moving or this cap is hit (round 0 excluded). Capped at
 // 2 rebuttal rounds — traces show the verdict is stable by round 2; round 3 was mostly churn.
 export const MAX_DEBATE_ROUNDS = 2;
-// The skeptic (the antagonist that keeps the Sonnet trio honest) stays on gpt-4o through this
-// debate round, then drops to gpt-4o-mini — by the late rounds we're closing, not breaking ground.
-export const DEBATE_SKEPTIC_STRONG_ROUNDS = 2;
 // Whether to run the conversational rounds is now a STANCE decision (hasGenuineDisagreement in
 // debate.ts) — ≥2 decisive stances or an id-clash — not a confidence-spread threshold, so the old
 // DEBATE_CONSENSUS_SPREAD / DEBATE_CONSENSUS_MIN_CONFIDENCE knobs are gone.
@@ -206,8 +127,9 @@ export const READSOURCE_HEAD_CHARS = 600;
 
 // -- Orchestration: per-model concurrency + retries (L6) ----------------------
 
-// Global in-flight cap per model id. gpt-4o has a low TPM ceiling, so we serialize its
-// committee calls (the skeptic) to 2 at a time; models absent here run unlimited.
-export const MODEL_CONCURRENCY: Record<string, number> = { "gpt-4o": 2 };
+// Global in-flight cap per model id, keyed for models with a known low TPM ceiling; models
+// absent here run unlimited. Empty by default post-gpt-4o (its low ceiling was the only reason
+// this existed) — repopulate per-model if a new provider proves rate-limit-sensitive under fan-out.
+export const MODEL_CONCURRENCY: Record<string, number> = {};
 // Retries per LLM call (transient 429/5xx). Applied at every generateText call site.
 export const LLM_MAX_RETRIES = 4;

@@ -9,9 +9,10 @@
  * script collects every arm into ComparisonResult.arms[] so a human can open one JSON file
  * and read output + cost side-by-side.
  */
-import { explore } from "../evidence/firecrawl";
+import { explore } from "../evidence/provider";
 import { callLLM, assembleReport } from "../analyze";
 import { normalizeIndustry } from "../intents";
+import { MODEL_CATALOG } from "../models/pricing";
 import type { ScanReport } from "../schema";
 import type { ResearchReport } from "./graph";
 import type { ScanEvent, TokenUsage } from "../events";
@@ -20,20 +21,10 @@ import type { RunMechanics } from "./mechanics";
 export type { RunMechanics } from "./mechanics";
 
 /**
- * Cost per million tokens by model (USD). Update when model pricing changes.
- * `cacheReadMult`/`cacheWriteMult` are per-model overrides for the prompt-cache
- * pricing multipliers (fraction of the base input rate). They default to
- * DEFAULT_CACHE_READ_MULT / DEFAULT_CACHE_WRITE_MULT when absent.
+ * Cost per million tokens by model (USD): MODEL_CATALOG (models/pricing.ts) is the single
+ * source of truth for both pricing and provider routing. Update pricing there, not here.
  */
-const MODEL_COST: Record<
-  string,
-  { input: number; output: number; cacheReadMult?: number; cacheWriteMult?: number }
-> = {
-  "gpt-4o":                       { input: 2.50, output: 10.00 },
-  "gpt-4o-mini":                  { input: 0.15, output:  0.60 },
-  "claude-sonnet-5":              { input: 2.00, output: 10.00 },
-  "claude-haiku-4-5-20251001":    { input: 1.00, output:  5.00 },
-};
+const MODEL_COST = MODEL_CATALOG;
 
 /** Cached (read) prompt tokens bill at this fraction of the base input rate. */
 const DEFAULT_CACHE_READ_MULT = 0.1;

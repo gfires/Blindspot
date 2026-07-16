@@ -5,6 +5,7 @@
 import type { ScanReport } from "@/lib/schema";
 import type { ScanState, UsageSummary } from "@/lib/useScanStream";
 import { SCORE_DEFINITIONS } from "@/lib/analyze";
+import { MODEL_CATALOG } from "@/lib/models/pricing";
 import { OpportunityMeter } from "./OpportunityMeter";
 import { Gauge } from "./Gauge";
 import { ReportSection, EvidenceList } from "./ReportSection";
@@ -180,17 +181,19 @@ export function ReportView({
   );
 }
 
-const MODEL_COSTS: Record<string, { prompt: number; completion: number }> = {
-  "gpt-4o": { prompt: 2.5, completion: 10 },
-  "gpt-4o-mini": { prompt: 0.15, completion: 0.6 },
-};
-
+/**
+ * Pulls straight from MODEL_CATALOG (lib/models/pricing.ts) — the same table the backend cost
+ * tracker uses — so this display can never drift from what a run actually billed. An id absent
+ * from the catalog contributes $0 rather than guessing another model's rate (was: silently
+ * mispricing every unrecognized model at gpt-4o's rate).
+ */
 function estimateCost(usage: UsageSummary): number {
   let cents = 0;
   for (const [model, tokens] of Object.entries(usage.tokensByModel)) {
-    const rates = MODEL_COSTS[model] ?? MODEL_COSTS["gpt-4o"];
-    cents += (tokens.prompt / 1_000_000) * rates.prompt * 100;
-    cents += (tokens.completion / 1_000_000) * rates.completion * 100;
+    const rates = MODEL_CATALOG[model];
+    if (!rates) continue;
+    cents += (tokens.prompt / 1_000_000) * rates.input * 100;
+    cents += (tokens.completion / 1_000_000) * rates.output * 100;
   }
   return cents;
 }

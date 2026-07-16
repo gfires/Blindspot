@@ -66,7 +66,8 @@ vi.mock("@/lib/blocklist", async () => {
 import { generateText } from "ai";
 import { runResearcher, PassPool, type ResearcherProgress } from "@/lib/orchestration/researcher";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "@/lib/orchestration/cost-tracker";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID, resultsPerQuestionForLoop } from "@/lib/params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, RESEARCHER_MODEL_ID } from "@/lib/params";
+import { resultsPerQuestionForLoop } from "@/lib/evidence/config";
 import type { Question } from "@/lib/schemas/state";
 
 const q = (id: string): Question => ({

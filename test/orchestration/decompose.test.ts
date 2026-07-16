@@ -3,7 +3,8 @@ import type { Mock } from "vitest";
 import { generateText } from "ai";
 import { decompose } from "@/lib/orchestration/graph";
 import { fallbackBrief, type ResearchBrief } from "@/lib/schemas/brief";
-import { MAX_QUESTIONS, MAX_SEARCH_QUERIES_PER_QUESTION } from "@/lib/params";
+import { MAX_QUESTIONS } from "@/lib/params";
+import { MAX_SEARCH_QUERIES_PER_QUESTION } from "@/lib/evidence/config";
 import type { ResearchStateT } from "@/lib/schemas/state";
 import { fakeGenResult } from "../helpers/mock-ai";
 

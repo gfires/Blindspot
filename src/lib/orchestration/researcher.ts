@@ -19,13 +19,12 @@
  * dedupes across agents; this module dedupes within its own agent and rolls ALL steps' usage into
  * ONE AnnotatedUsage (invariant 7).
  *
- * Model + Firecrawl client are injectable (mirrors the injected clock in firecrawl.ts) so tests
- * drive the agent with a scripted mock model and mocked Firecrawl primitives.
+ * Model + search provider client are injectable (mirrors the injected clock in firecrawl.ts) so
+ * tests drive the agent with a scripted mock model and mocked search-provider primitives.
  */
 import { generateText, tool, stepCountIs, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
-import type FirecrawlApp from "@mendable/firecrawl-js";
-import { webSearchRaw, scrapeOneCached, makeFirecrawl } from "../evidence/firecrawl";
+import { webSearchRaw, scrapeOneCached, createClient, type ProviderClient } from "../evidence/provider";
 import { type Evidence, contentHash } from "../evidence/store";
 import type { Question } from "../schemas/state";
 import { researcherModel } from "../models/provider";
@@ -39,7 +38,8 @@ import {
   WEBSEARCH_TOOL_DESCRIPTION,
   READSOURCE_TOOL_DESCRIPTION,
 } from "../prompts";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES, resultsPerQuestionForLoop } from "../params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
+import { resultsPerQuestionForLoop } from "../evidence/config";
 
 /**
  * A FCFS Firecrawl-credit pool shared across all of a pass's concurrent researcher agents.
@@ -154,11 +154,11 @@ export async function runResearcher(
   loopIteration: number,
   seenUrls: Set<string>,
   passPool: PassPool,
-  opts?: { model?: LanguageModel; firecrawl?: FirecrawlApp; maxReads?: number; emit?: (p: ResearcherProgress) => void },
+  opts?: { model?: LanguageModel; providerClient?: ProviderClient; maxReads?: number; emit?: (p: ResearcherProgress) => void },
 ): Promise<{ evidence: Evidence[]; usage: AnnotatedUsage }> {
   const model = opts?.model ?? researcherModel;
   const modelId = typeof model === "string" ? model : model.modelId;
-  const firecrawl = opts?.firecrawl ?? makeFirecrawl();
+  const providerClient = opts?.providerClient ?? createClient();
   // Per-pass evidence ceiling — default to the coded arm's per-pass depth so standalone/test callers
   // get eval-parity volume automatically; the node passes it explicitly (belt-and-suspenders).
   const maxReads = opts?.maxReads ?? resultsPerQuestionForLoop(loopIteration);
@@ -190,7 +190,7 @@ export async function runResearcher(
       if (passPool.exhausted) return BUDGET_EXHAUSTED_MESSAGE; // graceful, NOT a throw
       searchCount += 1;
       if (firstQuery === undefined) firstQuery = query;
-      const { hits, credits } = await webSearchRaw(query, firecrawl);
+      const { hits, credits } = await webSearchRaw(query, providerClient);
       passPool.charge(credits);
       emit?.({ kind: "search", questionId: question.id, loopIteration, query, hits: hits.length, credits, capped: false });
       for (const h of hits) {
@@ -230,7 +230,7 @@ export async function runResearcher(
           continue;
         }
         if (passPool.exhausted) break; // partial multi-URL read until the cap — then stop
-        const { content, domain, credits } = await scrapeOneCached(url, firecrawl);
+        const { content, domain, credits } = await scrapeOneCached(url, providerClient);
         passPool.charge(credits);
         readUrls.add(url);
         // ALWAYS store full Evidence — even empty content (a PDF / failed scrape) is still citable

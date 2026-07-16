@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, type Mock } from "vitest";
 import { runDebate } from "@/lib/orchestration/committee";
 import { MAX_DEBATE_ROUNDS } from "@/lib/params";
+import { ROLES } from "@/lib/roles";
 import { generateText } from "ai";
 import { fakeGenResult } from "../helpers/mock-ai";
 import type { Question } from "@/lib/schemas/state";
@@ -239,7 +240,7 @@ describe("runDebate", () => {
     expect(result.claims.every((c) => c.debateRound === MAX_DEBATE_ROUNDS)).toBe(true);
   });
 
-  it("uses the round-0 model mix for openings and Haiku for round-1 constructive roles", async () => {
+  it("uses the round-0 model mix for openings and the REDEBATE mix for round-1 turns", async () => {
     gen.mockImplementation(async (args: { messages: { role: string; content: string }[] }) => {
       const role = roleOf(args.messages);
       if (!isDebateTurn(args.messages)) return fakeGenResult(openingOutput(role));
@@ -253,15 +254,20 @@ describe("runDebate", () => {
       role: roleOf(c[0].messages),
       modelId: c[0].model.modelId as string,
     }));
-    // Round 0 constructive roles ran on Sonnet.
-    const openHistorian = modelIdByCall.find((m) => !m.debate && m.role === "historian");
-    expect(openHistorian?.modelId).toBe("claude-sonnet-5");
-    // Round 1 constructive roles dropped to Haiku.
-    const debateConstructive = modelIdByCall.filter(
-      (m) => m.debate && m.role !== "skeptic",
-    );
-    expect(debateConstructive.length).toBeGreaterThan(0);
-    expect(debateConstructive.every((m) => m.modelId.includes("haiku"))).toBe(true);
+    // Round 0 opening ran the loop-0 mix (ROLES[role].model).
+    for (const role of ["historian", "operator", "investor", "skeptic"] as const) {
+      const opening = modelIdByCall.find((m) => !m.debate && m.role === role);
+      expect(opening?.modelId).toBe(ROLES[role].model);
+    }
+    // Round 1 turns dropped to ROLES[role].redebateModel — investor is the only one with an
+    // actual downgrade available (Sonnet -> Haiku); the rest were already at their cheap tier.
+    for (const role of ["historian", "operator", "investor", "skeptic"] as const) {
+      const debateCalls = modelIdByCall.filter((m) => m.debate && m.role === role);
+      expect(debateCalls.length).toBeGreaterThan(0);
+      expect(debateCalls.every((m) => m.modelId === ROLES[role].redebateModel)).toBe(true);
+    }
+    const investorDebate = modelIdByCall.find((m) => m.debate && m.role === "investor");
+    expect(investorDebate?.modelId).toContain("haiku");
   });
 
   it("returns the final round's claims plus the full transcript", async () => {

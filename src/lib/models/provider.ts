@@ -1,37 +1,48 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import type { AgentRoleT } from "../schemas/claim";
-import { ROLE_MODEL_IDS, REDEBATE_ROLE_MODEL_IDS, DEBATE_SKEPTIC_STRONG_ROUNDS, RESEARCHER_MODEL_ID } from "../params";
+import { ROLES } from "../roles";
+import { RESEARCHER_MODEL_ID } from "../params";
+import { MODEL_CATALOG, type ModelProviderT } from "./pricing";
 
-/** Resolve a model id string to its SDK model instance (OpenAI for gpt-*, else Anthropic). */
+const PROVIDER_FACTORIES: Record<ModelProviderT, (id: string) => ReturnType<typeof anthropic>> = {
+  anthropic,
+  openai,
+  google,
+};
+
+/**
+ * Resolve a model id string to its SDK model instance, purely off MODEL_CATALOG's `provider`
+ * field (models/pricing.ts). Swapping or adding a model is a catalog edit, never a code change
+ * here — an id missing from the catalog throws immediately (fail loud on a typo, not a silent $0
+ * cost estimate downstream in eval.ts).
+ */
 function modelFromId(id: string) {
-  return id.startsWith("gpt") ? openai(id) : anthropic(id);
+  const entry = MODEL_CATALOG[id];
+  if (!entry) {
+    throw new Error(`modelFromId: "${id}" is not in MODEL_CATALOG (models/pricing.ts) — add it there first.`);
+  }
+  return PROVIDER_FACTORIES[entry.provider](id);
 }
 
 /**
- * The model for a committee role. Loop 0 uses the full mix (ROLE_MODEL_IDS); re-debates
- * (loopIteration > 0) use REDEBATE_ROLE_MODEL_IDS — Haiku for the three analytical roles,
- * gpt-4o for the skeptic. Both maps live in params.ts.
+ * The model for a committee role. Loop 0 uses ROLES[role].model; re-debates (loopIteration > 0)
+ * use ROLES[role].redebateModel. Role config lives in roles.ts.
  */
 export function modelForRole(role: AgentRoleT, loopIteration = 0) {
-  const ids = loopIteration > 0 ? REDEBATE_ROLE_MODEL_IDS : ROLE_MODEL_IDS;
-  return modelFromId(ids[role]);
+  const id = loopIteration > 0 ? ROLES[role].redebateModel : ROLES[role].model;
+  return modelFromId(id);
 }
 
 /**
- * The model for a role in a given DEBATE round (Wave 3). Heavy models are spent sparingly: round 0
- * is the deep opening and keeps the loop-aware mix (delegates to modelForRole with the retrieval
- * loop); conversational rounds (>=1) are declining-marginal-value refinements, so the three
- * constructive roles drop to the redebate Haiku (REDEBATE_ROLE_MODEL_IDS) and the skeptic stays
- * cross-family on gpt-4o only through DEBATE_SKEPTIC_STRONG_ROUNDS, then drops to gpt-4o-mini (by the
- * late rounds we're closing, not breaking ground). Every id returned exists in eval.ts MODEL_COST.
+ * The model for a role in a given DEBATE round (Wave 3). Round 0 is the deep opening and keeps
+ * the loop-aware mix (delegates to modelForRole with the retrieval loop); conversational rounds
+ * (>=1) are declining-marginal-value refinements, so every role drops to its redebateModel.
  */
 export function modelForDebateRound(role: AgentRoleT, debateRound: number, loopIteration = 0) {
   if (debateRound === 0) return modelForRole(role, loopIteration);
-  if (role === "skeptic") {
-    return modelFromId(debateRound <= DEBATE_SKEPTIC_STRONG_ROUNDS ? "gpt-4o" : "gpt-4o-mini");
-  }
-  return modelFromId(REDEBATE_ROLE_MODEL_IDS[role]);
+  return modelFromId(ROLES[role].redebateModel);
 }
 
 export const managerModel = anthropic("claude-haiku-4-5-20251001");

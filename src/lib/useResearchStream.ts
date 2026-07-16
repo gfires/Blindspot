@@ -27,6 +27,15 @@ export interface QuestionStatus {
   debateRounds: number;
 }
 
+/** One researcher-agent pass over a question (agentic arm only) — the window-shopping story. */
+export interface ResearcherPass {
+  loop: number;
+  mission: string;
+  searches: { query: string; hits: number; capped: boolean }[];
+  reads: { stored: number; requested: number; hitCeiling: boolean }[];
+  done?: { evidenceCount: number; searchCalls: number };
+}
+
 export interface GateDecision {
   loopIteration: number;
   gateScores: GateScore[];
@@ -68,6 +77,8 @@ export interface ResearchUIState {
   openingsByQuestion: Record<string, Claim[]>;
   /** Conversational rounds (round >= 1) per question, for the deliberation drill-down timeline. */
   roundsByQuestion: Record<string, { round: number; claims: Claim[] }[]>;
+  /** Per-question researcher-agent passes (agentic arm), one entry per begin, closed by done. */
+  researcherByQuestion: Record<string, ResearcherPass[]>;
   gateDecisions: GateDecision[];
   usage: ResearchUsage;
   trace: string[];
@@ -90,6 +101,7 @@ export const initialResearchState: ResearchUIState = {
   claimsByQuestion: {},
   openingsByQuestion: {},
   roundsByQuestion: {},
+  researcherByQuestion: {},
   gateDecisions: [],
   usage: {
     calls: [],
@@ -119,6 +131,15 @@ function addUsage(prev: ResearchUsage, u: AnnotatedUsage): ResearchUsage {
 function meanConfidence(claims: Claim[]): number {
   if (claims.length === 0) return 0;
   return claims.reduce((s, c) => s + c.confidence, 0) / claims.length;
+}
+
+/** Apply `updater` to the LATEST pass in the list (the one `begin` most recently opened). */
+function updateLatestPass(
+  passes: ResearcherPass[],
+  updater: (p: ResearcherPass) => ResearcherPass,
+): ResearcherPass[] {
+  if (passes.length === 0) return passes;
+  return [...passes.slice(0, -1), updater(passes[passes.length - 1])];
 }
 
 export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUIState {
@@ -226,20 +247,33 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ],
       };
 
-    // Agentic researcher lifecycle. For now these drive the raw trace feed (a live window-shopping
-    // narrative); the per-question board (spec phase) will consume the same events into lanes.
-    case "researcher:begin":
+    // Agentic researcher lifecycle — drives both the raw trace feed and the board's per-question
+    // Loop-cell window-shopping strip (researcherByQuestion, question-board-spec.md §3d).
+    case "researcher:begin": {
+      const pass: ResearcherPass = { loop: ev.loopIteration, mission: ev.mission, searches: [], reads: [] };
       return {
         ...state,
         phase,
         activeNode: "retrieve",
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: [...(state.researcherByQuestion[ev.questionId] ?? []), pass],
+        },
         trace: [...state.trace, `$ researcher on ${ev.questionId} (loop ${ev.loopIteration}): ${ev.mission.slice(0, 80)}`],
       };
+    }
 
     case "researcher:search":
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            searches: [...p.searches, { query: ev.query, hits: ev.hits, capped: ev.capped }],
+          })),
+        },
         trace: [
           ...state.trace,
           ev.capped
@@ -252,6 +286,13 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            reads: [...p.reads, { stored: ev.stored, requested: ev.requested, hitCeiling: ev.hitCeiling }],
+          })),
+        },
         trace: [
           ...state.trace,
           `$   read ${ev.stored}/${ev.requested} sources${ev.hitCeiling ? " (ceiling — enough this pass)" : ""}`,
@@ -262,6 +303,13 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            done: { evidenceCount: ev.evidenceCount, searchCalls: ev.searchCalls },
+          })),
+        },
         trace: [...state.trace, `$ researcher ${ev.questionId} done: ${ev.evidenceCount} sources, ${ev.searchCalls} search(es)`],
       };
 

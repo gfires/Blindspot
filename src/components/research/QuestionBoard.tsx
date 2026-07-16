@@ -20,6 +20,7 @@ import { DebateArena } from "./DebateArena";
 import { AgentSwimlane } from "./AgentSwimlane";
 import { EvidenceFeed } from "./EvidenceFeed";
 import { GateDecisionPanel } from "./GateDecisionPanel";
+import { WindowShopStrip } from "./WindowShopStrip";
 
 const ROLE_LABELS: Record<AgentRoleT, string> = {
   historian: "Historian",
@@ -185,7 +186,10 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
       {/* Loop */}
       <Cell active={isDrilled("loop")} onClick={() => onToggle(qid, "loop")}>
         {q.status === "looping" || q.currentLoop > 0 ? (
-          <span className="text-amber">↻ retrieve loop {q.currentLoop}</span>
+          <>
+            <span className="text-amber">↻ retrieve loop {q.currentLoop}</span>
+            <WindowShopStrip passes={state.researcherByQuestion[qid] ?? []} variant="cell" />
+          </>
         ) : (
           <span className="text-mute">—</span>
         )}
@@ -215,8 +219,13 @@ function DrillDownPanel({ drill, state, onClose }: DrillDownPanelProps) {
         </button>
       </div>
 
-      {stage === "recon" || stage === "loop" ? (
+      {stage === "recon" ? (
         <EvidenceFeed evidence={state.evidenceByQuestion[questionId] ?? []} loopIteration={state.loopIteration} />
+      ) : stage === "loop" ? (
+        <div className="space-y-3">
+          <WindowShopStrip passes={state.researcherByQuestion[questionId] ?? []} />
+          <EvidenceFeed evidence={state.evidenceByQuestion[questionId] ?? []} loopIteration={state.loopIteration} />
+        </div>
       ) : stage === "openings" ? (
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {(Object.keys(openingClaimsByRole) as AgentRoleT[]).map((role) => {

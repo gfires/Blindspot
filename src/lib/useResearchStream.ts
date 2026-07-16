@@ -16,6 +16,15 @@ export interface QuestionStatus {
   claimCount: number;
   aggregateConfidence: number;
   currentLoop: number;
+  /**
+   * Whether this loop's debate node actually re-ran the committee for this question
+   * ("debated") or reused its prior claim because it wasn't in `debate:begin.questionIds`
+   * ("skipped") — set at `debate:begin` (board spec §3b). "pending" until the first
+   * `debate:begin` this question participates in.
+   */
+  debateOutcome: "pending" | "skipped" | "debated";
+  /** Max `debateRound` seen across this question's streamed claims (0 = opening only). */
+  debateRounds: number;
 }
 
 export interface GateDecision {
@@ -134,6 +143,8 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         claimCount: 0,
         aggregateConfidence: 0,
         currentLoop: 0,
+        debateOutcome: "pending",
+        debateRounds: 0,
       }));
       return {
         ...state,
@@ -252,11 +263,18 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ...state,
         phase,
         activeNode: "debate",
-        questions: state.questions.map(q =>
-          ev.questionIds.includes(q.question.id)
-            ? { ...q, status: "debating" as const }
-            : q,
-        ),
+        // questionIds is exactly questionsNeedingDebate — the questions whose committee WILL
+        // re-run this loop. An unresolved question absent from it wasn't selected (see board
+        // spec §3b); a resolved question is left untouched (it's done, win or lose).
+        questions: state.questions.map(q => {
+          if (q.question.resolved) return q;
+          const debating = ev.questionIds.includes(q.question.id);
+          return {
+            ...q,
+            status: debating ? ("debating" as const) : q.status,
+            debateOutcome: debating ? ("debated" as const) : ("skipped" as const),
+          };
+        }),
         trace: [
           ...state.trace,
           `$ committee deliberating on ${ev.questionIds.length} questions (loop ${ev.loopIteration})...`,
@@ -290,6 +308,7 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
             ...q,
             claimCount: qClaims.length,
             aggregateConfidence: meanConfidence(qClaims),
+            debateRounds: Math.max(q.debateRounds, ev.claim.debateRound),
           };
         }),
         trace: [

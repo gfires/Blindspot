@@ -3,7 +3,7 @@
 import type { ResearchUIState } from "@/lib/useResearchStream";
 import type { ResearchReport } from "@/lib/orchestration/graph";
 import type { AgentRoleT } from "@/lib/schemas/claim";
-import { ResearchProgress } from "./ResearchProgress";
+import { QuestionBoard } from "./QuestionBoard";
 
 const ROLE_LABELS: Record<AgentRoleT, string> = {
   historian: "Historian",
@@ -157,7 +157,7 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
           Exploration trace
         </summary>
         <div className="px-4 pb-4">
-          <ResearchProgress state={scan} done />
+          <QuestionBoard state={scan} done />
         </div>
       </details>
 

@@ -62,6 +62,17 @@ export const MIN_LOOP_COST_HEADROOM_USD = 0.25;
 // completes; answerObjective additionally retries once if the model still reports a length cut.
 export const SYNTHESIS_ANSWER_MAX_TOKENS = 16000;
 
+// Output-token ceiling shared by every OTHER structured-output call (committee opening/debate-turn
+// claims, digest, intake, decompose, the researcher agent) for the same reason as
+// SYNTHESIS_ANSWER_MAX_TOKENS above: left unset, the AI SDK sends the model's 128k default on
+// EVERY call, and none of these small schemas (a claim, a digest item, a brief, a question list)
+// ever need more than a few thousand tokens including thinking. That unbounded default doesn't just
+// waste reserved capacity — Anthropic's real-world 529 "overloaded_error" rate correlates with
+// requested max_tokens, not just load, and a live run hit five straight 529s on claude-sonnet-5 (the
+// investor role) at the committee call site with no other change. Generous enough that no well-formed
+// output here should ever hit it.
+export const STRUCTURED_OUTPUT_MAX_TOKENS = 8000;
+
 // Budget reservation across the retrieval loop: no single retrieve pass may spend more than this
 // fraction of the run's INITIAL Firecrawl budget. The broad first pass has low marginal value per
 // credit (you don't yet know what's missing); the gap-targeted passes after a debate have high value

@@ -35,7 +35,7 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel, gateModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, estimateCostUsd } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, TOTAL_RETRIEVAL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
+import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, TOTAL_RETRIEVAL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, STRUCTURED_OUTPUT_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
 import { MAX_SEARCH_QUERIES_PER_QUESTION, resultsPerQuestionForLoop, SEARCH_PROVIDER, SCRAPE_PROVIDER } from "../evidence/config";
 import { SEARCH_PROVIDER_PRICING } from "../pricing";
 // Re-exported so existing importers (e.g. graph.test.ts) keep resolving it here. The function itself
@@ -183,6 +183,8 @@ export async function intake(state: ResearchStateT): Promise<Partial<ResearchSta
       output: Output.object({ schema: ResearchBriefSchema }),
       prompt,
       maxRetries: LLM_MAX_RETRIES,
+      // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+      maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
     });
 
     const annotated = toAnnotatedUsage(usage, managerModel.modelId, "intake");
@@ -264,6 +266,8 @@ export async function decompose(state: ResearchStateT): Promise<Partial<Research
     output: Output.object({ schema: DecompositionSchema }),
     prompt,
     maxRetries: LLM_MAX_RETRIES,
+    // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+    maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
   });
 
   const annotated = toAnnotatedUsage(usage, managerModel.modelId, "decompose");

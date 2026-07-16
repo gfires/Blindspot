@@ -40,7 +40,7 @@ import {
   WEBSEARCH_TOOL_DESCRIPTION,
   READSOURCE_TOOL_DESCRIPTION,
 } from "../prompts";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES, STRUCTURED_OUTPUT_MAX_TOKENS } from "../params";
 import { resultsPerQuestionForLoop } from "../evidence/config";
 
 /**
@@ -330,6 +330,8 @@ export async function runResearcher(
         tools: { webSearch, readSource },
         stopWhen: [stepCountIs(1)], // one model step per generateText → check() gates every step
         maxRetries: LLM_MAX_RETRIES,
+        // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
       }),
     );
     steps += 1;

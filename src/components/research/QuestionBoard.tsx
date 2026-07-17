@@ -177,7 +177,7 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
       {/* Deliberation */}
       <Cell active={isDrilled("deliberation")} onClick={() => onToggle(qid, "deliberation")}>
         <span className={q.debateOutcome === "debated" ? "text-accent" : "text-mute"}>
-          {deliberationLabel(q)}
+          {deliberationLabel(q, stance)}
         </span>
       </Cell>
 

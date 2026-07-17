@@ -150,6 +150,15 @@ describe("deliberationLabel", () => {
     expect(label).toMatch(/unanimous/);
   });
 
+  it("does NOT read as agreement when the unanimous skip is everyone abstaining (insufficient) — that's a gap, not a settled answer", () => {
+    const label = deliberationLabel(
+      { debateOutcome: "debated", debateRounds: 0, status: "resolved" },
+      "insufficient",
+    );
+    expect(label).toMatch(/insufficient/);
+    expect(label).not.toMatch(/no genuine disagreement/);
+  });
+
   it("reads as debated N rounds once conversational rounds ran", () => {
     expect(deliberationLabel({ debateOutcome: "debated", debateRounds: 2, status: "debating" })).toBe("🗣 debated 2 rounds");
   });

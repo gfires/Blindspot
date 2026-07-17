@@ -97,11 +97,23 @@ export function gateVerdict(score: GateScore | undefined, stance: CommitteeStanc
  * loop's claim, not the spec's hero "openings agreed" case. That case is `debateOutcome ===
  * "debated"` with `debateRounds === 0` AND the committee has actually finished — while still
  * `status === "debating"` with 0 rounds, openings are simply still arriving.
+ *
+ * The "0 rounds, committee finished" case splits in two, and conflating them is misleading: a
+ * UNANIMOUS DECISIVE lean (supports/opposes) is genuinely settled — nothing to debate, agreement is
+ * the answer. A UNANIMOUS INSUFFICIENT (every role abstained) is NOT agreement on an answer — it's
+ * "we all agree we don't have enough evidence yet," which the gate routes back to retrieval when a
+ * gap is named (questionRoute, gate.ts), not a resolution. Pass `stance` (committeeStance over the
+ * question's current claims) so the label says which one actually happened — the Gate cell right
+ * next to it already shows what happens as a result (retrieve/limitation/settled).
  */
-export function deliberationLabel(q: Pick<QuestionStatus, "debateOutcome" | "debateRounds" | "status">): string {
+export function deliberationLabel(
+  q: Pick<QuestionStatus, "debateOutcome" | "debateRounds" | "status">,
+  stance?: CommitteeStance,
+): string {
   if (q.debateOutcome === "pending") return "—";
   if (q.debateOutcome === "skipped") return "↻ reused prior claim — no fresh evidence this loop";
   if (q.debateRounds > 0) return `🗣 debated ${q.debateRounds} round${q.debateRounds === 1 ? "" : "s"}`;
   if (q.status === "debating") return "🗣 opening...";
+  if (stance === "insufficient") return "○ unanimous insufficient — evidence gap, not agreement";
   return "⚡ skipped — unanimous, no genuine disagreement";
 }

@@ -37,10 +37,14 @@ Preserved disagreement is a first-class output: a committee that "could not agre
 exact fault line" is more honest than a forced consensus.
 
 > **Status:** the debate mechanics (Wave 3, phases D1–D5) and the **agentic retrieval** migration
-> (the `agentic` arm) are both implemented and unit-tested (287 tests green). The live A/B runs that
-> quantify debate-vs-poll and agentic-vs-orchestrated retrieval are still pending a paid run (see
-> [STATUS.md](STATUS.md)). The debate-arena UI that renders the back-and-forth is tracked separately;
-> today's live visualization still shows each role's round-0 claim, not the full transcript.
+> (the `agentic` arm) are both implemented and unit-tested (421 tests green). A live end-to-end
+> agentic run has been verified — real multi-round debate (movement, convergence), all four
+> committee providers (Anthropic/OpenAI/Google) confirmed working, and cost matching the
+> configured rates exactly (see [STATUS.md](STATUS.md)). The formal A/B comparison that quantifies
+> debate-vs-poll and agentic-vs-orchestrated retrieval (`compare-arms.ts` across all three arms) is
+> still pending a paid run. The **question board** (`docs/question-board-spec.md`) now renders the
+> live debate-arena UI — round-0 openings and the full conversational-round transcript, not just
+> each role's final claim.
 
 ---
 
@@ -56,13 +60,15 @@ You need these keys in `.env.local`:
 
 | Var | Where | Used for |
 | --- | --- | --- |
-| `FIRECRAWL_API_KEY` | https://firecrawl.dev | web `/search` + `/scrape` |
-| `OPENAI_API_KEY` | https://platform.openai.com | baseline analysis, triage, skeptic agent |
-| `ANTHROPIC_API_KEY` | https://console.anthropic.com | manager, historian, operator, investor, digest agents |
+| `EXA_API_KEY` | https://dashboard.exa.ai/api-keys | web search (default `SEARCH_PROVIDER`, evidence/config.ts) |
+| `FIRECRAWL_API_KEY` | https://firecrawl.dev | scrape (default `SCRAPE_PROVIDER`) — set alongside `EXA_API_KEY`, not instead of it |
+| `OPENAI_API_KEY` | https://platform.openai.com | baseline analysis, triage, historian + operator committee roles |
+| `ANTHROPIC_API_KEY` | https://console.anthropic.com | manager (intake/decompose), investor committee role, digest, researcher agent, final answer |
+| `GOOGLE_GENERATIVE_AI_API_KEY` | https://aistudio.google.com/apikey | skeptic committee role (Gemini) — a free-tier AI Studio key (no billing account linked) works and is genuinely $0, just rate-limited |
 | `SUPABASE_URL` | Supabase project settings → API | search/scrape/blocklist cache host |
 | `SUPABASE_ANON_KEY` | Supabase project settings → API | cache access (legacy anon JWT `eyJ…`, not a `sb_publishable_…` key) |
 
-Supabase is optional-but-recommended: without it the app still runs, just uncached at full Firecrawl
+Supabase is optional-but-recommended: without it the app still runs, just uncached at full retrieval
 price. Create the schema from [`supabase/schema.sql`](supabase/schema.sql) and add `blindspot` to the
 project's **Exposed schemas**, then confirm with `npm run smoke:supabase`.
 
@@ -73,12 +79,17 @@ npm run compare -- "freight brokerage"                # all three arms
 npx tsx scripts/compare-arms.ts "freight brokerage"   # equivalent
 
 npm run run-arm agentic "freight brokerage"           # one arm: baseline | orchestrated | agentic
-npm run run-arm agentic "freight brokerage" --budget=50   # optional Firecrawl-budget override
+npm run run-arm agentic "freight brokerage" --budget=50               # search/scrape CREDIT cap override
+npm run run-arm agentic "freight brokerage" --usd-budget=0.25         # LLM $ SPEND cap override — independent pool
 ```
+
+`--budget` and `--usd-budget` cap two independent pools — retrieval credits vs. LLM dollars — either
+can run out first; both are optional on `run-arm.ts` and `compare-arms.ts`, and neither applies to
+`baseline` (no graph, no cost tracker).
 
 `compare` runs all **three** arms (baseline, orchestrated, agentic) and lands the output in
 `compare-output/<topic>-<timestamp>.json` as `{ topic, runAt, arms: ArmResult[] }` — each arm's
-report, token usage, Firecrawl costs, and wall-clock time side by side. Everything is fully
+report, token usage, retrieval costs, and wall-clock time side by side. Everything is fully
 standalone (tsx scripts, no Next.js UI needed). Note: the live SSE UI runs only the coded/orchestrated
 arm; agentic live-streaming is out of scope, so the agentic arm is measured via these scripts.
 
@@ -477,22 +488,34 @@ control" above for the full mechanism list). In short:
   `RECON_FLOOR` minimum (which re-drives an early stop once but is itself bounded by the three above,
   so a source-less question never deadlocks).
 
-### Real-time visualization
+### Real-time visualization — the question board
 
 The orchestrated arm streams `ResearchEvent`s over SSE from `/api/research/orchestrated`.
 The frontend `useResearchStream` hook feeds a pure reducer that builds up the full UI state.
-Live components show:
+`QuestionBoard` renders it as a **question-centric swimlane grid** (`docs/question-board-spec.md`):
+one row per research question, five lifecycle-stage columns flowing left→right, click-to-drill-down.
 
-- **Pipeline graph** — SVG node graph with loop arc, active/completed node highlighting
-- **Question tracker** — per-question status (pending → retrieving → debating → resolved/looping) with confidence bars
-- **Agent panel** — the 4 roles' claims as they arrive
-- **Evidence feed** — streaming source URLs with titles
-- **Gate decision panel** — per-question retrieve/resolve decisions with gapCount and confidenceSpread
-- **Cost counter** — running LLM token costs and Firecrawl credit spend
+- **Header** — topic, cost/time/loop counter, and a one-line `PipelineMinimap` ("you are here")
+- **Recon** — source count gathered on loop 0; drills into the per-question evidence feed
+- **Openings** — four `StanceDots` colored by each role's round-0 stance (green supports / red
+  opposes / grey insufficient), resolving to `agree` or `split`; drills into the fanned-out opening
+  claims (role, conclusion, confidence, stance)
+- **Deliberation** — `⚡ skipped — unanimous, no genuine disagreement` or `🗣 debated N rounds`;
+  drills into `DebateArena` (force-directed claim/evidence graph) + `AgentSwimlane` (a
+  round-by-round confidence timeline, fed by the real `debate:opening`/`debate:round` events —
+  the debate-arena work formerly tracked as D6)
+- **Gate** — committee stance chip + route verdict (`settled` / `fault-line` / `limitation` /
+  `retrieve +gap`), mirroring gate.ts's own routing reasoning; drills into `GateDecisionPanel`
+- **Loop** — `↻ retrieve loop K` with a `WindowShopStrip` mini-viz (🔍 query (hits) → 🚫 capped →
+  📄 read stored/requested ⛔ceiling); drills into the full per-question researcher trace
 
-> The agent panel currently renders each role's **round-0 opening claim**. Streaming the full debate
-> transcript (who-challenged-whom, concede/hold across rounds) is the debate-arena UI tracked with D6;
-> until it lands, the back-and-forth lives in the trace file, not the live view.
+**Replay**: `useResearchReplay` drives the SAME reducer over a pre-recorded event array
+(`/api/research/replay` serves the committed `test/fixtures/replay-events.json`) behind a
+play/pause/scrub/speed controller at `/replay` — no live run, no keys, no cost.
+
+**Run-mechanics receipt**: at run end, `RunMechanicsReceipt` renders the terminal
+`research:mechanics` event — debated/skipped/productive, effort split (search vs analyze),
+cost vs cap, convergence reason.
 
 ### Trace logging
 
@@ -547,15 +570,22 @@ src/
     layout.tsx                    fonts + metadata
     page.tsx                      mode toggle (scan vs research), idle → progress → report
     globals.css                   theme + terminal chrome
+    replay/page.tsx               /replay — QuestionBoard driven by useResearchReplay + play/pause/scrub UI
     api/
       scan/route.ts               baseline SSE streaming orchestrator
       research/
         orchestrated/route.ts     orchestrated SSE endpoint (POST, streams ResearchEvents)
+        replay/route.ts           serves the committed replay fixture (test/fixtures/replay-events.json)
   lib/
     params.ts                     all tunable parameters (baseline + orchestration)
     prompts.ts                    all LLM prompt wording (personas, calibration, node prompts)
-    research-events.ts            ResearchEvent union type (SSE wire protocol)
+    research-events.ts            ResearchEvent union type (SSE wire protocol) — incl. debate:opening/
+                                  debate:round/research:mechanics for the question board
     useResearchStream.ts          client hook + pure reducer for orchestrated research SSE
+    useResearchReplay.ts          drives the SAME reducer over a static event array (play/pause/scrub/speed)
+    research/
+      board.ts                    pure cell-derivation helpers for QuestionBoard (stance, verdicts, scoping)
+      arena.ts                    DebateArena/AgentSwimlane pure graph + swimlane-cell builders
     schemas/
       state.ts                    ResearchState (Annotation) + Question + debateTranscripts + retrievalMode channel
       evidence.ts                 Evidence zod schema (+ optional questionId for identity scoping)
@@ -569,11 +599,15 @@ src/
       graph.ts                    StateGraph (decompose→retrieve→debate→gate→recommend); retrieve dispatches on
                                   retrievalMode (coded body vs retrieveAgentic); missionForQuestion; runGraph()
       researcher.ts               agentic retrieve: runResearcher() (Haiku tool-loop) + PassPool + webSearch/readSource tools
-      graph-stream.ts             runGraphStreaming() — streams ResearchEvents from graph nodes (coded arm)
+      graph-stream.ts             runGraphStreaming() — streams ResearchEvents from graph nodes (defaults to
+                                  the agentic arm on the live/streaming surface); transcriptToEvents() emits
+                                  debate:opening/debate:round from the debate node's per-loop transcripts
       committee.ts                runCommittee() (blind opening) + runDebate() (full debate) + message builders
       debate.ts                   debate types + pure logic (consensus, movement, contentions, transcript)
       digest.ts                   per-question Haiku evidence digest (L2) + prompt/clamp/format helpers
       gate.ts                     allocateBudget() + gateShortCircuit() + contention routing — LLM gate + clamps
+      mechanics.ts                computeRunMechanics()/formatMechanicsReport() — RUN MECHANICS report,
+                                  streamed as the terminal research:mechanics event for the question board
       limiter.ts                  createLimiter() — per-model + Firecrawl FIFO concurrency caps (L6)
       cost-tracker.ts             per-run USD cost cap via AsyncLocalStorage (runWithCostTracker)
       eval.ts                     ArmResult + ComparisonResult (arms[]) + runBaseline() + toAnnotatedUsage() token tracking
@@ -594,18 +628,23 @@ src/
     exportPdf.ts                  client-side PDF export
   components/
     research/
-      ResearchProgress.tsx        orchestrated run progress container
-      PipelineGraph.tsx           SVG pipeline graph with loop arc
-      QuestionTracker.tsx         per-question status + confidence bars
-      AgentPanel.tsx              the 4 roles' independent claims display
-      EvidenceFeed.tsx            streaming evidence source feed
-      GateDecisionPanel.tsx       gate decision table with scores
-      CostCounter.tsx             live LLM + Firecrawl cost counter
-      ResearchReportView.tsx      final research report display
+      QuestionBoard.tsx           question-centric swimlane grid + drill-down router (top-level)
+      StanceDots.tsx              Openings-cell four-dot stance indicator
+      PipelineMinimap.tsx         one-line "you are here" pipeline strip (header)
+      WindowShopStrip.tsx         Loop-cell mini-viz + researcher-trace drill-down
+      RunMechanicsReceipt.tsx     run-end debated/skipped/productive + effort-split card
+      DebateArena.tsx             deliberation drill-down: force-directed claim/evidence graph
+      AgentSwimlane.tsx           deliberation drill-down: round-by-round confidence timeline
+      EvidenceFeed.tsx            Recon/Loop drill-down: per-question evidence feed
+      GateDecisionPanel.tsx       Gate drill-down: retrieve/resolve decisions with gapCount/spread
+      CostCounter.tsx             live LLM + Firecrawl cost counter (header)
+      ResearchReportView.tsx      final research report + run-mechanics receipt display
+      PipelineGraph.tsx           unshrunk pipeline graph (superseded by PipelineMinimap, kept)
+      QuestionTracker.tsx         per-question status card (absorbed into QuestionBoard's row header, kept)
     ScanInput.tsx, ScanProgress.tsx, ReportView.tsx, Gauge.tsx, ...
 scripts/
-  compare-arms.ts                 A/B/C comparison harness — baseline + orchestrated + agentic (accepts --budget)
-  run-arm.ts                      single-arm runner (baseline | orchestrated | agentic, accepts --budget)
+  compare-arms.ts                 A/B/C comparison harness — baseline + orchestrated + agentic (accepts --budget, --usd-budget)
+  run-arm.ts                      single-arm runner (baseline | orchestrated | agentic, accepts --budget, --usd-budget, --stream)
   supabase-smoke.ts               live (free) round-trip check of the Supabase cache
   migrate-caches.mjs              one-time seed of Supabase from the legacy data/*.json files
 supabase/
@@ -625,16 +664,16 @@ Zero-cost checks (no API credits — run these to confirm the build):
 
 ```bash
 npx tsc --noEmit       # typecheck
-npx vitest run         # unit tests (287 green)
+npx vitest run         # unit tests (421 green)
 npm run smoke:supabase # verify the Supabase cache round-trips (live but free)
 ```
 
 Paid / live runs (spend API credits — the real functional check of the pipeline):
 
 ```bash
-npm run dev                                     # dev server at http://localhost:3000 (coded arm in the UI)
+npm run dev                                     # dev server at http://localhost:3000 (agentic arm in the live UI)
 npm run run-arm agentic "freight brokerage"     # one arm: baseline | orchestrated | agentic
-npm run run-arm agentic "freight brokerage" --budget=50   # Firecrawl-budget override (--budget=N, not a space)
+npm run run-arm agentic "freight brokerage" --budget=50 --usd-budget=0.25   # both are --flag=N, not a space
 npm run compare -- "freight brokerage"          # all three arms → compare-output/<topic>-<ts>.json
 ```
 

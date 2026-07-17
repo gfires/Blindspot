@@ -8,6 +8,7 @@ import type { Evidence } from "./schemas/evidence";
 import type { Claim } from "./schemas/claim";
 import type { AnnotatedUsage } from "./orchestration/eval";
 import type { ResearchReport } from "./orchestration/graph";
+import type { RunMechanics } from "./orchestration/mechanics";
 
 export interface QuestionStatus {
   question: Question;
@@ -16,6 +17,24 @@ export interface QuestionStatus {
   claimCount: number;
   aggregateConfidence: number;
   currentLoop: number;
+  /**
+   * Whether this loop's debate node actually re-ran the committee for this question
+   * ("debated") or reused its prior claim because it wasn't in `debate:begin.questionIds`
+   * ("skipped") — set at `debate:begin` (board spec §3b). "pending" until the first
+   * `debate:begin` this question participates in.
+   */
+  debateOutcome: "pending" | "skipped" | "debated";
+  /** Max `debateRound` seen across this question's streamed claims (0 = opening only). */
+  debateRounds: number;
+}
+
+/** One researcher-agent pass over a question (agentic arm only) — the window-shopping story. */
+export interface ResearcherPass {
+  loop: number;
+  mission: string;
+  searches: { query: string; hits: number; capped: boolean }[];
+  reads: { stored: number; requested: number; hitCeiling: boolean }[];
+  done?: { evidenceCount: number; searchCalls: number };
 }
 
 export interface GateDecision {
@@ -54,10 +73,19 @@ export interface ResearchUIState {
   evidenceByQuestion: Record<string, Evidence[]>;
   claims: Claim[];
   claimsByQuestion: Record<string, Claim[]>;
+  /** Round-0 blind-opening claims per question (§3c) — replaced (not appended) when a question's
+   *  committee re-runs on a later loop, detected via the claim's `loopIteration`. */
+  openingsByQuestion: Record<string, Claim[]>;
+  /** Conversational rounds (round >= 1) per question, for the deliberation drill-down timeline. */
+  roundsByQuestion: Record<string, { round: number; claims: Claim[] }[]>;
+  /** Per-question researcher-agent passes (agentic arm), one entry per begin, closed by done. */
+  researcherByQuestion: Record<string, ResearcherPass[]>;
   gateDecisions: GateDecision[];
   usage: ResearchUsage;
   trace: string[];
   report: ResearchReport | null;
+  /** The run-mechanics receipt (§6 Phase 5) — set from the terminal research:mechanics event. */
+  mechanics: RunMechanics | null;
   error: string | null;
   running: boolean;
 }
@@ -74,6 +102,9 @@ export const initialResearchState: ResearchUIState = {
   evidenceByQuestion: {},
   claims: [],
   claimsByQuestion: {},
+  openingsByQuestion: {},
+  roundsByQuestion: {},
+  researcherByQuestion: {},
   gateDecisions: [],
   usage: {
     calls: [],
@@ -85,6 +116,7 @@ export const initialResearchState: ResearchUIState = {
   },
   trace: [],
   report: null,
+  mechanics: null,
   error: null,
   running: false,
 };
@@ -103,6 +135,15 @@ function addUsage(prev: ResearchUsage, u: AnnotatedUsage): ResearchUsage {
 function meanConfidence(claims: Claim[]): number {
   if (claims.length === 0) return 0;
   return claims.reduce((s, c) => s + c.confidence, 0) / claims.length;
+}
+
+/** Apply `updater` to the LATEST pass in the list (the one `begin` most recently opened). */
+function updateLatestPass(
+  passes: ResearcherPass[],
+  updater: (p: ResearcherPass) => ResearcherPass,
+): ResearcherPass[] {
+  if (passes.length === 0) return passes;
+  return [...passes.slice(0, -1), updater(passes[passes.length - 1])];
 }
 
 export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUIState {
@@ -134,6 +175,8 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         claimCount: 0,
         aggregateConfidence: 0,
         currentLoop: 0,
+        debateOutcome: "pending",
+        debateRounds: 0,
       }));
       return {
         ...state,
@@ -208,20 +251,33 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ],
       };
 
-    // Agentic researcher lifecycle. For now these drive the raw trace feed (a live window-shopping
-    // narrative); the per-question board (spec phase) will consume the same events into lanes.
-    case "researcher:begin":
+    // Agentic researcher lifecycle — drives both the raw trace feed and the board's per-question
+    // Loop-cell window-shopping strip (researcherByQuestion, question-board-spec.md §3d).
+    case "researcher:begin": {
+      const pass: ResearcherPass = { loop: ev.loopIteration, mission: ev.mission, searches: [], reads: [] };
       return {
         ...state,
         phase,
         activeNode: "retrieve",
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: [...(state.researcherByQuestion[ev.questionId] ?? []), pass],
+        },
         trace: [...state.trace, `$ researcher on ${ev.questionId} (loop ${ev.loopIteration}): ${ev.mission.slice(0, 80)}`],
       };
+    }
 
     case "researcher:search":
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            searches: [...p.searches, { query: ev.query, hits: ev.hits, capped: ev.capped }],
+          })),
+        },
         trace: [
           ...state.trace,
           ev.capped
@@ -234,6 +290,13 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            reads: [...p.reads, { stored: ev.stored, requested: ev.requested, hitCeiling: ev.hitCeiling }],
+          })),
+        },
         trace: [
           ...state.trace,
           `$   read ${ev.stored}/${ev.requested} sources${ev.hitCeiling ? " (ceiling — enough this pass)" : ""}`,
@@ -244,6 +307,13 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
       return {
         ...state,
         phase,
+        researcherByQuestion: {
+          ...state.researcherByQuestion,
+          [ev.questionId]: updateLatestPass(state.researcherByQuestion[ev.questionId] ?? [], p => ({
+            ...p,
+            done: { evidenceCount: ev.evidenceCount, searchCalls: ev.searchCalls },
+          })),
+        },
         trace: [...state.trace, `$ researcher ${ev.questionId} done: ${ev.evidenceCount} sources, ${ev.searchCalls} search(es)`],
       };
 
@@ -252,11 +322,18 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
         ...state,
         phase,
         activeNode: "debate",
-        questions: state.questions.map(q =>
-          ev.questionIds.includes(q.question.id)
-            ? { ...q, status: "debating" as const }
-            : q,
-        ),
+        // questionIds is exactly questionsNeedingDebate — the questions whose committee WILL
+        // re-run this loop. An unresolved question absent from it wasn't selected (see board
+        // spec §3b); a resolved question is left untouched (it's done, win or lose).
+        questions: state.questions.map(q => {
+          if (q.question.resolved) return q;
+          const debating = ev.questionIds.includes(q.question.id);
+          return {
+            ...q,
+            status: debating ? ("debating" as const) : q.status,
+            debateOutcome: debating ? ("debated" as const) : ("skipped" as const),
+          };
+        }),
         trace: [
           ...state.trace,
           `$ committee deliberating on ${ev.questionIds.length} questions (loop ${ev.loopIteration})...`,
@@ -272,6 +349,38 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
           `$ digested ${ev.evidenceCount} sources for ${ev.questionId} (loop ${ev.loopIteration})`,
         ],
       };
+
+    case "debate:opening": {
+      // Replace (not append) once a NEW loop's openings start arriving for this question — a
+      // transcript is ephemeral to one evidence snapshot (mirrors the graph's mergeTranscripts),
+      // detected mechanically off the claim's `loopIteration`, never guessed.
+      const qid = ev.claim.questionId;
+      const existing = state.openingsByQuestion[qid] ?? [];
+      const sameLoop = existing.length > 0 && existing[0].loopIteration === ev.claim.loopIteration;
+      return {
+        ...state,
+        phase,
+        openingsByQuestion: {
+          ...state.openingsByQuestion,
+          [qid]: sameLoop ? [...existing, ev.claim] : [ev.claim],
+        },
+      };
+    }
+
+    case "debate:round": {
+      const existing = state.roundsByQuestion[ev.questionId] ?? [];
+      const sameLoop = existing.length > 0 && existing[0].claims[0]?.loopIteration === ev.claims[0]?.loopIteration;
+      return {
+        ...state,
+        phase,
+        roundsByQuestion: {
+          ...state.roundsByQuestion,
+          [ev.questionId]: sameLoop
+            ? [...existing, { round: ev.round, claims: ev.claims }]
+            : [{ round: ev.round, claims: ev.claims }],
+        },
+      };
+    }
 
     case "debate:claim": {
       const newClaims = [...state.claims, ev.claim];
@@ -290,6 +399,7 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
             ...q,
             claimCount: qClaims.length,
             aggregateConfidence: meanConfidence(qClaims),
+            debateRounds: Math.max(q.debateRounds, ev.claim.debateRound),
           };
         }),
         trace: [
@@ -380,6 +490,9 @@ export function reduce(state: ResearchUIState, ev: ResearchEvent): ResearchUISta
 
     case "research:usage":
       return { ...state, usage: addUsage(state.usage, ev.usage) };
+
+    case "research:mechanics":
+      return { ...state, mechanics: ev.mechanics };
 
     case "research:error":
       return {

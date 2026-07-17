@@ -14,13 +14,35 @@ import type { ResearchStateT, Question, RetrievalMode } from "../schemas/state";
 import type { Evidence } from "../schemas/evidence";
 import type { SearchProgress } from "../evidence/provider";
 import type { Claim } from "../schemas/claim";
+import type { DebateRound } from "./debate";
 import type { DigestItem } from "./digest";
 import type { ResearcherProgress } from "./researcher";
 import type { AnnotatedUsage } from "./eval";
 import type { ResearchEvent, GateScore } from "../research-events";
-import { TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
+import { TOTAL_RETRIEVAL_BUDGET, MAX_LOOP_ITERATIONS } from "../params";
 import { startTrace } from "./trace";
 import { runWithCostTracker, getActiveCostTracker, BudgetExceededError } from "./cost-tracker";
+
+/**
+ * One question's debate transcript → the board's `debate:opening`/`debate:round` SSE events
+ * (question-board-spec.md §3c): round 0 streams as one `debate:opening` per role (mirroring
+ * `debate:claim`'s per-claim style, for the live dots-snapping animation); rounds ≥1 stream as one
+ * `debate:round` per round (a whole round's revised claims together, for the deliberation
+ * timeline). The node (committee.ts/graph.ts) only walks state; this is graph-stream's own event
+ * mapping, kept here so the researcher/committee layer stays unaware of the wire protocol.
+ * Exported for direct unit testing.
+ */
+export function transcriptToEvents(questionId: string, rounds: DebateRound[]): ResearchEvent[] {
+  const events: ResearchEvent[] = [];
+  for (const round of [...rounds].sort((a, b) => a.round - b.round)) {
+    if (round.round === 0) {
+      for (const claim of round.claims) events.push({ type: "debate:opening", claim });
+    } else {
+      events.push({ type: "debate:round", questionId, round: round.round, claims: round.claims });
+    }
+  }
+  return events;
+}
 
 export function runGraphStreaming(
   topic: string,
@@ -30,10 +52,16 @@ export function runGraphStreaming(
   // per-question `researcher:*` progress the UI renders. `runGraph` (non-streaming) defaults to
   // "coded" as the eval control; the live/streaming surface defaults to "agentic" on purpose.
   retrievalMode: RetrievalMode = "agentic",
+  // Overrides MAX_RUN_COST_USD (params.ts) for this run — the LLM $ cap, independent of
+  // budgetOverride (the search/scrape CREDIT cap). Undefined keeps the default.
+  usdBudgetOverride?: number,
 ): Promise<ArmResult> {
   // Per-run cost tracker via AsyncLocalStorage — see runWithCostTracker. Isolates
   // this run's spend from any other concurrent run in the same process.
-  return runWithCostTracker(() => runGraphStreamingInner(topic, send, budgetOverride, retrievalMode));
+  return runWithCostTracker(
+    () => runGraphStreamingInner(topic, send, budgetOverride, retrievalMode),
+    usdBudgetOverride,
+  );
 }
 
 async function runGraphStreamingInner(
@@ -58,7 +86,7 @@ async function runGraphStreamingInner(
   // already begun executing, which would delay the first begin event by seconds.
   send({ type: "decompose:begin" });
 
-  const initialBudget = budgetOverride ?? TOTAL_FIRECRAWL_BUDGET;
+  const initialBudget = budgetOverride ?? TOTAL_RETRIEVAL_BUDGET;
   const stream = await graph.stream(
     { topic, budgetRemaining: initialBudget, retrievalMode },
     // "updates" fires only on node COMPLETION, so begin events are emitted eagerly
@@ -191,7 +219,11 @@ async function runGraphStreamingInner(
             budgetRemaining += (output.budgetRemaining ?? 0) as number;
 
             for (const ev of evidence) {
-              send({ type: "retrieve:evidence", evidence: ev, questionId: ev.sourceQuery });
+              // Prefer the real question id (agentic arm tags every Evidence with it — see
+              // researcher.ts) over sourceQuery, mirroring scopeEvidenceToQuestions's own identity-
+              // first scoping. Without this, evidenceByQuestion keys on the raw search query text
+              // and the board's per-question Recon/Loop cells never match a question id.
+              send({ type: "retrieve:evidence", evidence: ev, questionId: ev.questionId ?? ev.sourceQuery });
             }
 
             send({
@@ -221,8 +253,15 @@ async function runGraphStreamingInner(
             const claims = (output.claims ?? []) as Claim[];
             const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
             const digests = (output.digests ?? {}) as Record<string, DigestItem[]>;
+            const transcripts = (output.debateTranscripts ?? {}) as Record<string, DebateRound[]>;
             allLlmCalls.push(...usages);
             allClaims.push(...claims);
+
+            // Openings + rounds first (§3c) — the debate node's output only carries THIS loop's
+            // transcripts, so this is exactly the fresh opening/round activity to stream.
+            for (const [qid, rounds] of Object.entries(transcripts)) {
+              for (const transcriptEvent of transcriptToEvents(qid, rounds)) send(transcriptEvent);
+            }
 
             for (const claim of claims) {
               send({ type: "debate:claim", claim });
@@ -360,6 +399,8 @@ async function runGraphStreamingInner(
   const tracker = getActiveCostTracker();
   const rollupUsages = tracker ? tracker.getUsages() : allLlmCalls;
   const tokens = rollupTokens(rollupUsages);
+  const mechanics = computeRunMechanics(trace.getEntries(), finalState, tokens);
+  send({ type: "research:mechanics", mechanics });
   const result = {
     arm: "orchestrated" as const,
     topic,
@@ -368,7 +409,7 @@ async function runGraphStreamingInner(
     firecrawlCalls: totalFirecrawlCalls,
     firecrawlCredits: totalFirecrawlCredits,
     durationMs: Date.now() - t0,
-    mechanics: computeRunMechanics(trace.getEntries(), finalState, tokens),
+    mechanics,
   };
 
   await writeTrace();

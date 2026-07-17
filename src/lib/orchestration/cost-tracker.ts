@@ -75,6 +75,12 @@ class CostTracker {
   getRemaining(): number {
     return Math.max(0, this.cap - this.spent);
   }
+
+  /** The cap THIS run is actually enforcing — may differ from MAX_RUN_COST_USD when
+   *  runWithCostTracker was given an override (e.g. --usd-budget). */
+  getCap(): number {
+    return this.cap;
+  }
 }
 
 /**

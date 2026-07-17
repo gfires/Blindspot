@@ -62,6 +62,13 @@ vi.mock("@/lib/blocklist", async () => {
   const actual = await vi.importActual<typeof import("@/lib/blocklist")>("@/lib/blocklist");
   return { ...actual, loadBlocklist: async () => h.blocklist, recordBlock: async () => {} };
 });
+// Force both operations onto Firecrawl (default config is search=exa/scrape=firecrawl) — the
+// researcher agent's webSearch/readSource tools run end to end through the mocked Firecrawl SDK.
+vi.mock("@/lib/evidence/config", async (orig) => ({
+  ...(await orig<typeof import("@/lib/evidence/config")>()),
+  SEARCH_PROVIDER: "firecrawl",
+  SCRAPE_PROVIDER: "firecrawl",
+}));
 
 import { generateText } from "ai";
 import { runResearcher, PassPool, type ResearcherProgress } from "@/lib/orchestration/researcher";
@@ -373,6 +380,10 @@ describe("runResearcher — real-credit charge", () => {
     await runResearcher(q("q6"), "m", 1, new Set(), pool);
 
     expect(pool.spent).toBe(3); // 2 (search) + 1 (scrape)
+    // Split accounting (search-scrape-provider-split-spec.md §6): one combined pool, but the
+    // webSearch/readSource tools book through chargeSearch/chargeScrape so the kinds stay separable.
+    expect(pool.spentSearch).toBe(2);
+    expect(pool.spentScrape).toBe(1);
   });
 
   it("charges 0 for a cache-hit search", async () => {

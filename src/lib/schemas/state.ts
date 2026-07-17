@@ -102,6 +102,11 @@ export const ResearchState = Annotation.Root({
   budgetSpent: Annotation<number>({ reducer: accumulate, default: () => 0 }),
   firecrawlCalls: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
   firecrawlCredits: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
+  /** firecrawlCredits split by kind (search vs scrape) — same additive-delta shape, always
+   * searchCredits + scrapeCredits === firecrawlCredits. See evidence/provider.ts's ExploreResult/
+   * SearchResult and researcher.ts's PassPool.spentSearch/spentScrape for the sources. */
+  searchCredits: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
+  scrapeCredits: Annotation<number>({ reducer: (prev, next) => prev + next, default: () => 0 }),
   converged: Annotation<boolean>({ reducer: (_prev, next) => next, default: () => false }),
   /** Every LLM call made anywhere in the graph (decompose, committee, gate), append-only. */
   llmCalls: Annotation<AnnotatedUsage[]>({

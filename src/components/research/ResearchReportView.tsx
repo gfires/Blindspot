@@ -3,7 +3,8 @@
 import type { ResearchUIState } from "@/lib/useResearchStream";
 import type { ResearchReport } from "@/lib/orchestration/graph";
 import type { AgentRoleT } from "@/lib/schemas/claim";
-import { ResearchProgress } from "./ResearchProgress";
+import { QuestionBoard } from "./QuestionBoard";
+import { RunMechanicsReceipt } from "./RunMechanicsReceipt";
 
 const ROLE_LABELS: Record<AgentRoleT, string> = {
   historian: "Historian",
@@ -115,7 +116,7 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
         <div className="flex flex-wrap gap-4 font-mono text-xs text-mute">
           <span>tokens: <span className="nums text-fg">{(scan.usage.totalPromptTokens + scan.usage.totalCompletionTokens).toLocaleString()}</span></span>
           <span>cost: <span className="nums text-fg">${scan.usage.totalCostUsd.toFixed(4)}</span></span>
-          <span>firecrawl: <span className="nums text-fg">{scan.usage.firecrawlCredits} credits</span></span>
+          <span>retrieval: <span className="nums text-fg">{scan.usage.firecrawlCredits} credits</span></span>
           <span>llm calls: <span className="nums text-fg">{scan.usage.calls.length}</span></span>
         </div>
         {scan.usage.calls.length > 0 && (
@@ -151,13 +152,16 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
         )}
       </div>
 
+      {/* Run mechanics receipt */}
+      {scan.mechanics && <RunMechanicsReceipt mechanics={scan.mechanics} />}
+
       {/* Exploration trace */}
       <details className="panel">
         <summary className="cursor-pointer px-4 py-3 text-xs font-mono text-mute hover:text-fg transition">
           Exploration trace
         </summary>
         <div className="px-4 pb-4">
-          <ResearchProgress state={scan} done />
+          <QuestionBoard state={scan} done />
         </div>
       </details>
 

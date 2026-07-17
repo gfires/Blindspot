@@ -6,7 +6,7 @@ import { useResearchStream } from "@/lib/useResearchStream";
 import { ScanInput, type RunMode } from "@/components/ScanInput";
 import { ScanProgress } from "@/components/ScanProgress";
 import { ReportView } from "@/components/ReportView";
-import { ResearchProgress } from "@/components/research/ResearchProgress";
+import { QuestionBoard } from "@/components/research/QuestionBoard";
 import { ResearchReportView } from "@/components/research/ResearchReportView";
 import { Leaderboard } from "@/components/Leaderboard";
 import type { ResearchReport } from "@/lib/orchestration/graph";
@@ -67,7 +67,7 @@ export default function Home() {
       {/* Research: live progress */}
       {researchShowProgress && (
         <div className="pt-4">
-          <ResearchProgress state={research.state} />
+          <QuestionBoard state={research.state} />
         </div>
       )}
 

@@ -5,7 +5,7 @@
 import type { ScanReport } from "@/lib/schema";
 import type { ScanState, UsageSummary } from "@/lib/useScanStream";
 import { SCORE_DEFINITIONS } from "@/lib/analyze";
-import { MODEL_CATALOG } from "@/lib/models/pricing";
+import { MODEL_CATALOG } from "@/lib/pricing";
 import { OpportunityMeter } from "./OpportunityMeter";
 import { Gauge } from "./Gauge";
 import { ReportSection, EvidenceList } from "./ReportSection";
@@ -131,7 +131,7 @@ export function ReportView({
         </summary>
         <p className="mt-3 leading-relaxed">
           Blindspot generated {report.sources.length ? "a set of" : "no"} search intents,
-          searched the public web via Firecrawl, scraped the most relevant pages, and asked an LLM
+          searched the public web, scraped the most relevant pages, and asked an LLM
           to infer the five diagnostic scores below — each grounded in the cited sources. The
           headline Opportunity Score (0–100) is computed deterministically from the sub-scores
           (pain, software gap, labor scarcity, AI suitability, budget signal). <strong>All scores
@@ -186,7 +186,7 @@ export function ReportView({
 }
 
 /**
- * Pulls straight from MODEL_CATALOG (lib/models/pricing.ts) — the same table the backend cost
+ * Pulls straight from MODEL_CATALOG (lib/pricing.ts) — the same table the backend cost
  * tracker uses — so this display can never drift from what a run actually billed. An id absent
  * from the catalog contributes $0 rather than guessing another model's rate (was: silently
  * mispricing every unrecognized model at gpt-4o's rate).
@@ -213,7 +213,7 @@ function UsagePill({ usage }: { usage: UsageSummary }) {
   return (
     <span className="ml-2 inline-flex items-center gap-1.5 normal-case tracking-normal text-mute/70">
       {fmtTokens(total)} tokens · ~${cents < 1 ? cents.toFixed(2) : cents.toFixed(1)}¢
-      {usage.firecrawlCredits > 0 && <> · {usage.firecrawlCredits} Firecrawl credits</>}
+      {usage.firecrawlCredits > 0 && <> · {usage.firecrawlCredits} retrieval credits</>}
     </span>
   );
 }
@@ -235,7 +235,7 @@ function UsageBreakdown({ usage }: { usage: UsageSummary }) {
         ))}
         {usage.firecrawlCredits > 0 && (
           <div className="flex items-center justify-between gap-4">
-            <span className="text-fg/70">Firecrawl</span>
+            <span className="text-fg/70">Retrieval (search + scrape)</span>
             <span className="nums text-mute">{usage.firecrawlCredits} credits ({usage.firecrawlCalls} API calls)</span>
           </div>
         )}

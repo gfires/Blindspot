@@ -18,7 +18,7 @@ import type { Question } from "../schemas/state";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import { getActiveTrace } from "./trace";
 import { getActiveCostTracker } from "./cost-tracker";
-import { MAX_DIGEST_SUMMARY_CHARS, MAX_EVIDENCE_CHARS_PER_AGENT, LLM_MAX_RETRIES } from "../params";
+import { MAX_DIGEST_SUMMARY_CHARS, MAX_EVIDENCE_CHARS_PER_AGENT, LLM_MAX_RETRIES, STRUCTURED_OUTPUT_MAX_TOKENS } from "../params";
 // Prompt wording lives in src/lib/prompts.ts; this file keeps the source assembly + clamping logic.
 import { NO_EVIDENCE_NOTICE, digestPrompt } from "../prompts";
 
@@ -129,6 +129,8 @@ export async function digestEvidence(
       output: Output.object({ schema: DigestOutputSchema }),
       prompt,
       maxRetries: LLM_MAX_RETRIES,
+      // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+      maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
     });
 
     const annotated = toAnnotatedUsage(usage, digestModel.modelId, `digest:${question.id}`);

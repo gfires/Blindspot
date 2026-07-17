@@ -19,12 +19,14 @@
  * dedupes across agents; this module dedupes within its own agent and rolls ALL steps' usage into
  * ONE AnnotatedUsage (invariant 7).
  *
- * Model + search provider client are injectable (mirrors the injected clock in firecrawl.ts) so
- * tests drive the agent with a scripted mock model and mocked search-provider primitives.
+ * Model + the search/scrape provider clients are injectable (mirrors the injected clock in
+ * evidence/provider.ts) so tests drive the agent with a scripted mock model and mocked
+ * search-provider primitives. Search and scrape may be DIFFERENT providers (evidence/config.ts's
+ * SEARCH_PROVIDER / SCRAPE_PROVIDER), so each gets its own client.
  */
 import { generateText, tool, stepCountIs, type LanguageModel, type ModelMessage } from "ai";
 import { z } from "zod";
-import { webSearchRaw, scrapeOneCached, createClient, type ProviderClient } from "../evidence/provider";
+import { webSearchRaw, scrapeOneCached, createSearchClient, createScrapeClient, type ProviderClient } from "../evidence/provider";
 import { type Evidence, contentHash } from "../evidence/store";
 import type { Question } from "../schemas/state";
 import { researcherModel } from "../models/provider";
@@ -38,7 +40,7 @@ import {
   WEBSEARCH_TOOL_DESCRIPTION,
   READSOURCE_TOOL_DESCRIPTION,
 } from "../prompts";
-import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES } from "../params";
+import { MAX_AGENT_STEPS, MAX_SEARCHES_PER_PASS, RECON_FLOOR, READSOURCE_HEAD_CHARS, LLM_MAX_RETRIES, STRUCTURED_OUTPUT_MAX_TOKENS } from "../params";
 import { resultsPerQuestionForLoop } from "../evidence/config";
 
 /**
@@ -57,6 +59,8 @@ import { resultsPerQuestionForLoop } from "../evidence/config";
 export class PassPool {
   private remaining: number;
   private spentCredits = 0;
+  private spentSearchCredits = 0;
+  private spentScrapeCredits = 0;
   private billableCalls = 0;
   constructor(seed: number) {
     this.remaining = seed;
@@ -64,7 +68,12 @@ export class PassPool {
   get exhausted(): boolean {
     return this.remaining <= 0;
   }
-  /** Book real post-cache credits (cache hit = 0 → free). May drive remaining ≤ 0; bounded overshoot accepted. */
+  /**
+   * Book real post-cache credits (cache hit = 0 → free), kind-agnostic. May drive remaining ≤ 0;
+   * bounded overshoot accepted. Prefer chargeSearch/chargeScrape at a real call site so the
+   * search-vs-scrape split (spentSearch/spentScrape below) stays accurate; this generic entry
+   * point stays for callers that don't distinguish kind.
+   */
   charge(realCredits: number): void {
     this.remaining -= realCredits;
     this.spentCredits += realCredits;
@@ -73,8 +82,24 @@ export class PassPool {
     // the coded arm's `queries.length`.
     if (realCredits > 0) this.billableCalls += 1;
   }
+  /** Book a live search credit — same accounting as charge(), plus the search-only split. */
+  chargeSearch(realCredits: number): void {
+    this.charge(realCredits);
+    this.spentSearchCredits += realCredits;
+  }
+  /** Book a live scrape credit — same accounting as charge(), plus the scrape-only split. */
+  chargeScrape(realCredits: number): void {
+    this.charge(realCredits);
+    this.spentScrapeCredits += realCredits;
+  }
   get spent(): number {
     return this.spentCredits;
+  }
+  get spentSearch(): number {
+    return this.spentSearchCredits;
+  }
+  get spentScrape(): number {
+    return this.spentScrapeCredits;
   }
   /** Number of billable (non-cache-hit) Firecrawl calls charged against this pool. */
   get calls(): number {
@@ -154,11 +179,20 @@ export async function runResearcher(
   loopIteration: number,
   seenUrls: Set<string>,
   passPool: PassPool,
-  opts?: { model?: LanguageModel; providerClient?: ProviderClient; maxReads?: number; emit?: (p: ResearcherProgress) => void },
+  opts?: {
+    model?: LanguageModel;
+    searchClient?: ProviderClient;
+    scrapeClient?: ProviderClient;
+    maxReads?: number;
+    emit?: (p: ResearcherProgress) => void;
+  },
 ): Promise<{ evidence: Evidence[]; usage: AnnotatedUsage }> {
   const model = opts?.model ?? researcherModel;
   const modelId = typeof model === "string" ? model : model.modelId;
-  const providerClient = opts?.providerClient ?? createClient();
+  // Search and scrape may be DIFFERENT providers (evidence/config.ts's SEARCH_PROVIDER /
+  // SCRAPE_PROVIDER) — one client per operation, each amortized across this whole agent run.
+  const searchClient = opts?.searchClient ?? createSearchClient();
+  const scrapeClient = opts?.scrapeClient ?? createScrapeClient();
   // Per-pass evidence ceiling — default to the coded arm's per-pass depth so standalone/test callers
   // get eval-parity volume automatically; the node passes it explicitly (belt-and-suspenders).
   const maxReads = opts?.maxReads ?? resultsPerQuestionForLoop(loopIteration);
@@ -190,8 +224,8 @@ export async function runResearcher(
       if (passPool.exhausted) return BUDGET_EXHAUSTED_MESSAGE; // graceful, NOT a throw
       searchCount += 1;
       if (firstQuery === undefined) firstQuery = query;
-      const { hits, credits } = await webSearchRaw(query, providerClient);
-      passPool.charge(credits);
+      const { hits, credits } = await webSearchRaw(query, searchClient);
+      passPool.chargeSearch(credits);
       emit?.({ kind: "search", questionId: question.id, loopIteration, query, hits: hits.length, credits, capped: false });
       for (const h of hits) {
         // first-wins: the query that FIRST surfaced a url owns its sourceQuery tag.
@@ -230,8 +264,8 @@ export async function runResearcher(
           continue;
         }
         if (passPool.exhausted) break; // partial multi-URL read until the cap — then stop
-        const { content, domain, credits } = await scrapeOneCached(url, providerClient);
-        passPool.charge(credits);
+        const { content, domain, credits } = await scrapeOneCached(url, scrapeClient);
+        passPool.chargeScrape(credits);
         readUrls.add(url);
         // ALWAYS store full Evidence — even empty content (a PDF / failed scrape) is still citable
         // from its snippet. questionId is the P1 identity tag: the whole point.
@@ -296,6 +330,8 @@ export async function runResearcher(
         tools: { webSearch, readSource },
         stopWhen: [stepCountIs(1)], // one model step per generateText → check() gates every step
         maxRetries: LLM_MAX_RETRIES,
+        // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
       }),
     );
     steps += 1;

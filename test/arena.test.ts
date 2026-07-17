@@ -3,6 +3,7 @@ import {
   latestClaimsByRole,
   buildArenaGraph,
   swimlaneCells,
+  debateRoundCells,
 } from "@/lib/research/arena";
 import type { Claim } from "@/lib/schemas/claim";
 import type { Evidence } from "@/lib/schemas/evidence";
@@ -222,5 +223,27 @@ describe("swimlaneCells", () => {
     ];
     const result = swimlaneCells(claims, "q1");
     expect(result.rows.historian[0].confidence).toBe(0.5);
+  });
+});
+
+describe("debateRoundCells", () => {
+  it("keys by debateRound, not loopIteration", () => {
+    const claims = [
+      makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 3, debateRound: 0, confidence: 0.3 }),
+      makeClaim({ agentRole: "historian", questionId: "q1", loopIteration: 3, debateRound: 1, confidence: 0.7 }),
+    ];
+    const result = debateRoundCells(claims, "q1");
+    expect(result.maxLoop).toBe(1); // maxLoop field carries the round count here
+    expect(result.rows.historian[0].confidence).toBe(0.3);
+    expect(result.rows.historian[1].confidence).toBe(0.7);
+    expect(result.rows.historian[1].delta).toBe("up");
+  });
+
+  it("empty claims produce an empty result", () => {
+    const result = debateRoundCells([], "q1");
+    expect(result.maxLoop).toBe(0);
+    for (const role of ["historian", "operator", "investor", "skeptic"] as const) {
+      expect(result.rows[role]).toHaveLength(0);
+    }
   });
 });

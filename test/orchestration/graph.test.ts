@@ -160,7 +160,7 @@ describe("synthesizeReport", () => {
 
 describe("budget reducer (accumulate)", () => {
   it("seeds the initial budget as a delta onto the default of 0", () => {
-    // runGraph invokes with { budgetRemaining: TOTAL_FIRECRAWL_BUDGET }; the reducer
+    // runGraph invokes with { budgetRemaining: TOTAL_RETRIEVAL_BUDGET }; the reducer
     // treats that as a delta added to default() = 0, so the seed survives.
     expect(accumulate(0, 80)).toBe(80);
   });

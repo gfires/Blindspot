@@ -108,6 +108,57 @@ export interface SwimlaneResult {
   rows: Record<AgentRoleT, SwimCell[]>;
 }
 
+/**
+ * Same shape as `swimlaneCells`, but keyed by conversational `debateRound` instead of the outer
+ * retrieval loop — the deliberation drill-down's round-by-round confidence timeline (fed by
+ * `openingsByQuestion` + `roundsByQuestion`, question-board-spec.md §3c), not the per-loop
+ * `claimsByQuestion` view. `SwimCell.loop` carries the round number in this context.
+ */
+export function debateRoundCells(claims: Claim[], questionId: string): SwimlaneResult {
+  const filtered = claims.filter(c => c.questionId === questionId);
+  if (filtered.length === 0) {
+    return {
+      maxLoop: 0,
+      rows: { historian: [], operator: [], investor: [], skeptic: [] },
+    };
+  }
+
+  const maxRound = Math.max(...filtered.map(c => c.debateRound));
+
+  const rows = {} as Record<AgentRoleT, SwimCell[]>;
+  for (const role of ROLES) {
+    const roleClaims = filtered.filter(c => c.agentRole === role);
+    const byRound = new Map<number, Claim[]>();
+    for (const c of roleClaims) {
+      const arr = byRound.get(c.debateRound) ?? [];
+      arr.push(c);
+      byRound.set(c.debateRound, arr);
+    }
+
+    const cells: SwimCell[] = [];
+    let prevConfidence: number | null = null;
+    for (let round = 0; round <= maxRound; round++) {
+      const roundClaims = byRound.get(round);
+      if (!roundClaims || roundClaims.length === 0) {
+        cells.push({ loop: round, confidence: null, delta: null });
+        continue;
+      }
+      const confidence = roundClaims.reduce((s, c) => s + c.confidence, 0) / roundClaims.length;
+      let delta: SwimCell["delta"] = null;
+      if (prevConfidence !== null) {
+        if (confidence > prevConfidence) delta = "up";
+        else if (confidence < prevConfidence) delta = "down";
+        else delta = "flat";
+      }
+      cells.push({ loop: round, confidence, delta });
+      prevConfidence = confidence;
+    }
+    rows[role] = cells;
+  }
+
+  return { maxLoop: maxRound, rows };
+}
+
 export function swimlaneCells(claims: Claim[], questionId: string): SwimlaneResult {
   const filtered = claims.filter(c => c.questionId === questionId);
   if (filtered.length === 0) {

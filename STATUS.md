@@ -184,6 +184,111 @@ then stopped cleanly on `cost-headroom`. Deliberation share ~67% (cache-aware). 
 double-gated (`questionsNeedingDebate` new-evidence gate + Phase A disagreement gate), so the loop-1 spend was
 warranted, not waste — the $ lever scales with how many questions genuinely agree, which is topic-dependent.
 
+## Question board — question-centric UI (branch `question-board-spec`)
+
+**Built (Phases 1-5), `tsc` clean, `next build` clean, 409 vitest green.** Spec
+`docs/question-board-spec.md`. Replaces the node-centric `ResearchProgress` dashboard (organized by
+pipeline stage — all questions' evidence, then all questions' debate, then all gate decisions) with
+`QuestionBoard`: one swimlane per question, five lifecycle-stage columns (Recon → Openings →
+Deliberation → Gate → Loop), click-to-drill-down. Nothing thrown away — the nine existing
+components recompose as drill-downs; three are new.
+
+- **Phase 1 — shell + derived data**: `debateOutcome`/`debateRounds` added to `QuestionStatus` (set
+  at `debate:begin`/`debate:claim` — the skip-vs-debate signal the reducer previously dropped).
+  Stance chips read `committeeStance`/`hasGenuineDisagreement` straight from `orchestration/debate.ts`
+  client-side (pure, no server deps — no new module needed). New `StanceDots`, `PipelineMinimap`,
+  `QuestionBoard` (swimlane grid + drill-down router); `ResearchProgress.tsx` retired in its favor.
+- **Phase 2 — real openings + rounds** (`research-events.ts`, `graph-stream.ts`): new
+  `debate:opening`/`debate:round` events — the one real gap, since only final claims streamed
+  before. `transcriptToEvents()` walks the debate node's per-loop `debateTranscripts` output (round 0
+  → one opening event per role, rounds ≥1 → one event per round); the node stays unaware of the wire
+  protocol. Reducer accumulates `openingsByQuestion`/`roundsByQuestion`, REPLACING per question on a
+  new loop (detected off `claim.loopIteration`) to mirror the graph's `mergeTranscripts` semantics.
+  `AgentSwimlane` repurposed as the deliberation drill-down's round-by-round timeline (new
+  `debateRoundCells` in `arena.ts`, keyed by `debateRound` instead of the outer loop).
+- **Phase 3 — window-shopping mini-viz** (`WindowShopStrip`): `researcherByQuestion` accumulates one
+  `ResearcherPass` per `researcher:begin`, closed by `researcher:done` — the Loop cell's compact
+  strip and the Loop drill-down's full researcher trace (mission → search → read, `capped`/
+  `hitCeiling` flags included).
+- **Phase 4 — replay** (`useResearchReplay`, `/api/research/replay`, `/replay`): drives the SAME
+  `reduce` over a pre-recorded event array behind a play/pause/scrub/speed controller — the board
+  needs zero changes, it's a pure function of reduced state. Trace source: an API route serving the
+  committed fixture (`test/fixtures/replay-events.json`), decided over a client-bundled import to
+  keep the fixture out of the client bundle.
+- **Phase 5 — run-mechanics receipt** (`RunMechanicsReceipt`): a new terminal `research:mechanics`
+  SSE event puts `computeRunMechanics`'s already-computed output on the wire (previously only
+  reachable via the batch `ArmResult`). `mechanics.ts` itself untouched — pure read + wiring.
+  `RunMechanicsReceipt` reads `RunMechanics` fields directly rather than calling
+  `formatMechanicsReport`, since that's a VALUE import and would drag the module's server-only
+  dependency chain (`trace.ts`'s `fs/promises`, `cost-tracker.ts`'s `async_hooks`) into the client
+  bundle — caught by `next build`, not `tsc`/`vitest`, so worth calling out for the next person
+  wiring orchestration data into a client component.
+
+Not yet live-verified against a real run in the browser (dogfooded via `next build` + the bundled
+replay fixture only) — the human should click through a live run before merging.
+
+**Review pass (Opus 4.8, post-rebase onto `409364f`'s search/scrape provider split):** traced the
+reducer, graph-stream emission, and cell-derivation logic against ground truth in
+`debate.ts`/`gate.ts`/`researcher.ts` and found three real bugs, all fixed:
+- `retrieve:evidence` was keyed by the raw search-query text instead of the question id, so
+  `evidenceByQuestion` never matched a question on the agentic arm — every Recon cell read "0 src".
+  Fixed to prefer `evidence.questionId` (researcher.ts always tags it), mirroring
+  `scopeEvidenceToQuestions`'s own identity-first scoping.
+- The hero "openings agreed, rounds skipped" case was mislabeled "🗣 opening..." (reads as still
+  in progress); `deliberationLabel` (moved into `board.ts`, now pure/tested) now distinguishes
+  still-arriving from genuinely-finished-with-0-rounds, and gives the *actually*-different
+  graph-level "no fresh evidence this loop" case its own honest label.
+- `gateVerdict` collapsed every non-retrieve resolve into "✔ settled", including
+  insufficient-with-no-gap and diminishing-returns resolves (gate.ts's own "nothing to retrieve"
+  limitations). New `"limitation"` verdict distinguishes them from a genuine unanimous lean; fixing
+  it also surfaced that the Gate cell's stance was computed over a question's entire claim
+  history instead of its current loop's position (new `currentCommitteeClaims()` in `board.ts`).
+
+**Known gap, not fixed (costs a paid run to fix):** the committed replay fixture
+(`test/fixtures/replay-events.json`) predates Phases 2/5 — zero `debate:opening`/`debate:round`/
+`research:mechanics` events — so `/replay` doesn't exercise the openings/rounds timeline or the
+mechanics receipt. Regenerate with `npx tsx scripts/run-arm.ts agentic "<topic>" --stream` +
+`npx tsx scripts/extract-replay-fixture.ts` when convenient.
+
+**Live-run validation + hardening (2026-07-16), same branch.** The human ran real paid agentic runs
+against the live providers to answer "are we actually ready to run" — three real failures found and
+fixed, one full clean run confirmed every provider and price correct.
+
+- **Google billing, not a bug**: first run hit `429 RESOURCE_EXHAUSTED — prepayment credits
+  depleted`. Root cause: the project's API key had a billing account linked with $0 prepay balance
+  — Google does NOT fall back to the free tier when that happens, it just stops serving. Fixed by
+  swapping to a free-tier key (no billing account); `gemini-3.1-flash-lite` now correctly priced at
+  $0/$0 in `pricing.ts` (confirmed genuinely free, not a promotional credit).
+- **Anthropic 529 "Overloaded" root-caused, not just retried**: two further runs died on
+  `claude-sonnet-5` (the investor role) after 5 retries. Every `generateText()` call in the
+  orchestration layer except the answer/synthesis call left `maxOutputTokens` unset, so the AI SDK
+  requested the model's 128k default on EVERY call — a `ClaimOutputSchema` object needs a few
+  hundred tokens. New `STRUCTURED_OUTPUT_MAX_TOKENS = 8000` (params.ts) applied to committee.ts
+  (both opening and debate-turn calls), digest.ts, graph.ts (intake + decompose), and researcher.ts
+  — every Anthropic call site that lacked a ceiling. `gate.ts` untouched (OpenAI, not Anthropic).
+- **`--usd-budget` CLI flag** (`run-arm.ts`, `compare-arms.ts`): `runWithCostTracker()` already took
+  an optional cap override; nothing threaded it from the CLI. Independent of the credit `--budget` —
+  either pool can run out first.
+- **Clean run confirmed end-to-end** after both fixes: real 2-round debate (movement + clean
+  convergence), all four committee providers succeeded, and the reported `$0.1884` total matched an
+  independent recomputation from the raw trace's token usage against `pricing.ts`'s rates exactly —
+  Sonnet ($2/$10), gpt-5.4-mini ($0.75/$4.50), Haiku ($1/$5), Gemini ($0/$0) are genuinely what gets
+  billed, not stale numbers.
+- **Two more real mechanics.ts bugs found reading that same output closely**: `capUsd` was
+  hardcoded to `MAX_RUN_COST_USD`, never the tracker's actual (possibly `--usd-budget`-overridden)
+  cap — fixed via a new `CostTracker.getCap()` accessor. The RETRIEVAL line said "firecrawl N calls"
+  for what's actually combined Exa (search) + Firecrawl (scrape) credits post the provider split —
+  the word was wrong everywhere it appeared (CLI report, `CostCounter.tsx`, `ResearchReportView.tsx`,
+  `ReportView.tsx`'s baseline UI too, same pipeline) — changed to "retrieval" throughout; field names
+  (`firecrawlCalls`/`firecrawlCredits`) left alone (a real rename is separate, bigger work).
+- **Model-id config completeness**: `managerModel`/`gateModel`/`gateClassifierModel`/`digestModel`
+  were the last inline string literals in `models/provider.ts` — every other model choice already
+  lived in a named params.ts/roles.ts constant. Extracted to `MANAGER_MODEL_ID`/`ANSWER_MODEL_ID`/
+  `GATE_CLASSIFIER_MODEL_ID`/`DIGEST_MODEL_ID`, same pattern as the pre-existing
+  `RESEARCHER_MODEL_ID`, so swapping any tier is a one-line params.ts edit.
+
+tsc clean, next build clean, 421 vitest green across all of the above.
+
 ## Open issues
 
 - None blocking. Historian confabulation fix confirmed live (2026-07-14 traces: round-0 claims cite ids). Previous schema-crash, silent-retrieve, and cost-overcount issues resolved — see Done / Wave 2.

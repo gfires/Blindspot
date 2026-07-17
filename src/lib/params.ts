@@ -32,7 +32,12 @@ export const MAX_QUESTIONS         = 4;
 // -- Orchestration: gate / budget --------------------------------------------
 
 export const MAX_LOOP_ITERATIONS   = 5;
-export const TOTAL_FIRECRAWL_BUDGET = 80;
+// ONE combined credit pool that search-credits and scrape-credits draw down together, regardless
+// of which providers are selected (evidence/config.ts's SEARCH_PROVIDER / SCRAPE_PROVIDER) — not
+// two independent caps. Search/scrape spend is still separately ACCOUNTED (state.searchCredits /
+// state.scrapeCredits, mechanics.ts's retrieval split) so the breakdown is visible; only the CAP
+// itself stays unified, closest to pre-split behavior with correct per-provider rates.
+export const TOTAL_RETRIEVAL_BUDGET = 80;
 // Hard USD cap on a run's LLM spend, enforced by the cost tracker (check() before each gated call).
 // The final objective-level ANSWER is EXEMPT (it records cost but never gates) — the deliverable is
 // non-negotiable and always gets written, even on a run that hit this cap. So a run's total can land
@@ -56,6 +61,17 @@ export const MIN_LOOP_COST_HEADROOM_USD = 0.25;
 // above thinking + a full multi-fault-line adjudication (~2k tokens observed) — so the answer always
 // completes; answerObjective additionally retries once if the model still reports a length cut.
 export const SYNTHESIS_ANSWER_MAX_TOKENS = 16000;
+
+// Output-token ceiling shared by every OTHER structured-output call (committee opening/debate-turn
+// claims, digest, intake, decompose, the researcher agent) for the same reason as
+// SYNTHESIS_ANSWER_MAX_TOKENS above: left unset, the AI SDK sends the model's 128k default on
+// EVERY call, and none of these small schemas (a claim, a digest item, a brief, a question list)
+// ever need more than a few thousand tokens including thinking. That unbounded default doesn't just
+// waste reserved capacity — Anthropic's real-world 529 "overloaded_error" rate correlates with
+// requested max_tokens, not just load, and a live run hit five straight 529s on claude-sonnet-5 (the
+// investor role) at the committee call site with no other change. Generous enough that no well-formed
+// output here should ever hit it.
+export const STRUCTURED_OUTPUT_MAX_TOKENS = 8000;
 
 // Budget reservation across the retrieval loop: no single retrieve pass may spend more than this
 // fraction of the run's INITIAL Firecrawl budget. The broad first pass has low marginal value per
@@ -97,6 +113,28 @@ export const MAX_DEBATE_ROUNDS = 2;
 // DEBATE_CONSENSUS_SPREAD / DEBATE_CONSENSUS_MIN_CONFIDENCE knobs are gone.
 // Round-over-round: a confidence move at or below this counts as "no movement" for convergence.
 export const DEBATE_CONFIDENCE_EPSILON        = 0.05;
+
+// -- Orchestration: utility models (manager/gate/digest) ---------------------
+// Every non-committee model id in ONE place (mirrors roles.ts doing the same for the four
+// committee roles) so swapping any of them is a one-line edit here, never a hunt through
+// models/provider.ts. Each id must exist in pricing.ts's MODEL_CATALOG.
+
+// Intake (topic -> ResearchBrief) + decompose (topic -> questions): fast, cheap reads of the
+// raw topic, no deep reasoning needed. Haiku is genuinely the right tier here, not just the
+// cheap default — both calls are small-schema extraction, not judgment calls.
+export const MANAGER_MODEL_ID = "claude-haiku-4-5-20251001";
+// The recommend node's ANSWER step (A5) — the ONE call that writes the final deliverable, so it
+// runs on the strongest available model, not a cheap tier. This is `gateModel` in
+// models/provider.ts (a legacy name predating the stance-routing gate) — it is NOT the gate
+// decision model; see GATE_CLASSIFIER_MODEL_ID below for that.
+export const ANSWER_MODEL_ID = "claude-sonnet-5";
+// The actual retrieve/resolve gate classifier (gate.ts's allocateBudget). A cheap, fast model is
+// fine here: the LLM gate only ever sees questions the zero-cost stance/contention routing
+// couldn't resolve on its own (questionRoute/contentionRoute), never the full question set.
+export const GATE_CLASSIFIER_MODEL_ID = "gpt-4o-mini";
+// Per-question evidence digest (L2) — same cheap/fast tier as MANAGER_MODEL_ID, same reasoning:
+// compressing a source to one summary item is extraction, not judgment.
+export const DIGEST_MODEL_ID = "claude-haiku-4-5-20251001";
 
 // -- Orchestration: researcher (agentic retrieval) ---------------------------
 

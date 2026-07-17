@@ -15,13 +15,13 @@ vi.mock("@/lib/orchestration/researcher", async (orig) => ({
 }));
 // The coded path calls search(); stub it so the "coded does not call runResearcher" test never hits
 // the network and we can assert it WAS consulted.
-vi.mock("@/lib/evidence/firecrawl", async (orig) => ({
-  ...(await orig<typeof import("@/lib/evidence/firecrawl")>()),
+vi.mock("@/lib/evidence/provider", async (orig) => ({
+  ...(await orig<typeof import("@/lib/evidence/provider")>()),
   search: vi.fn(async () => ({ evidence: [], searchCredits: 0, scrapeCredits: 0, triageUsage: undefined })),
 }));
 
 import { runResearcher, PassPool } from "@/lib/orchestration/researcher";
-import { search } from "@/lib/evidence/firecrawl";
+import { search } from "@/lib/evidence/provider";
 import { retrieve, retrieveAgentic } from "@/lib/orchestration/graph";
 import { fallbackBrief } from "@/lib/schemas/brief";
 import type { ResearchStateT, Question, RetrievalMode } from "@/lib/schemas/state";
@@ -69,7 +69,8 @@ describe("retrieveAgentic — sole-writer budget delta [REGRESSION]", () => {
     // Two agents (loop-0 recon → both get a mission), each charges the SHARED pool 5.
     (runResearcher as Mock).mockImplementation(
       async (question: Question, _m: string, _l: number, _s: Set<string>, pool: PassPool) => {
-        pool.charge(5);
+        pool.chargeSearch(2);
+        pool.chargeScrape(3);
         return {
           evidence: question.id === "q1" ? [ev("a"), ev("b")] : [ev("b"), ev("c")], // shared "b"
           usage,
@@ -82,6 +83,10 @@ describe("retrieveAgentic — sole-writer budget delta [REGRESSION]", () => {
     expect(out.budgetRemaining).toBe(-10); // one signed delta = -(5+5)
     expect(out.budgetSpent).toBe(10);
     expect(out.firecrawlCredits).toBe(10);
+    // Split accounting (search-scrape-provider-split-spec.md §6): one combined budget delta, but
+    // the node also reports the search-vs-scrape breakdown from the pool's separated counters.
+    expect(out.searchCredits).toBe(4); // 2 agents × chargeSearch(2)
+    expect(out.scrapeCredits).toBe(6); // 2 agents × chargeScrape(3)
     // Dedupe across agents by contentHash: {a,b,c} → 3.
     expect(out.newEvidenceCount).toBe(3);
     expect(out.evidence).toHaveLength(3);

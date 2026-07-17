@@ -4,6 +4,7 @@ import {
   formatMechanicsReport,
 } from "../../src/lib/orchestration/mechanics";
 import { toAnnotatedUsage, type ArmTokens } from "../../src/lib/orchestration/eval";
+import { runWithCostTracker } from "../../src/lib/orchestration/cost-tracker";
 import { MAX_RUN_COST_USD } from "../../src/lib/params";
 import type { TraceEntry } from "../../src/lib/orchestration/trace";
 import type { ResearchStateT, Question } from "../../src/lib/schemas/state";
@@ -86,6 +87,8 @@ function makeState(overrides: Partial<ResearchStateT> = {}): ResearchStateT {
     budgetSpent: 0,
     firecrawlCalls: 0,
     firecrawlCredits: 0,
+    searchCredits: 0,
+    scrapeCredits: 0,
     converged: false,
     llmCalls: [],
     searchedQueries: [],
@@ -210,6 +213,8 @@ function fixtureState(): ResearchStateT {
     loopIteration: 2,
     firecrawlCalls: 5,
     firecrawlCredits: 10,
+    searchCredits: 4,
+    scrapeCredits: 6,
     converged: true,
     debateTranscripts: fixtureTranscripts(),
   });
@@ -239,6 +244,12 @@ describe("computeRunMechanics — retrieval", () => {
     expect(m.retrieval.scrapeOps).toBe(1);
     expect(m.retrieval.firecrawlCalls).toBe(5);
     expect(m.retrieval.firecrawlCredits).toBe(10);
+  });
+
+  it("reports the search/scrape credit split, summing to firecrawlCredits", () => {
+    expect(m.retrieval.searchCredits).toBe(4);
+    expect(m.retrieval.scrapeCredits).toBe(6);
+    expect(m.retrieval.searchCredits + m.retrieval.scrapeCredits).toBe(m.retrieval.firecrawlCredits);
   });
 
   it("counts agent searches/reads and the search:read ratio", () => {
@@ -362,6 +373,15 @@ describe("computeRunMechanics — convergence", () => {
     expect(m.convergence.totalCostUsd).toBe(1.0);
     expect(m.convergence.capUsd).toBe(MAX_RUN_COST_USD);
     expect(m.convergence.overCap).toBe(true);
+  });
+
+  it("reports the ACTIVE tracker's cap, not the MAX_RUN_COST_USD default, when overridden (e.g. --usd-budget)", async () => {
+    const withOverride = await runWithCostTracker(
+      async () => computeRunMechanics(fixtureEntries(), fixtureState(), makeTokens(1.0)),
+      0.15,
+    );
+    expect(withOverride.convergence.capUsd).toBe(0.15);
+    expect(withOverride.convergence.overCap).toBe(true); // $1.00 spent > $0.15 cap
   });
 });
 

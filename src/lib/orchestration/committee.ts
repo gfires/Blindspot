@@ -32,6 +32,7 @@ import {
   LLM_MAX_RETRIES,
   MAX_DEBATE_ROUNDS,
   DEBATE_CONFIDENCE_EPSILON,
+  STRUCTURED_OUTPUT_MAX_TOKENS,
 } from "../params";
 // Prompt WORDING lives in one place (src/lib/prompts.ts). This file keeps the state-shaping and
 // the cache/ModelMessage plumbing; the shared system prefix and the per-role user messages are
@@ -277,6 +278,10 @@ export async function runCommittee(
         // opt in here (otherwise: AI_InvalidPromptError "System messages are not allowed").
         allowSystemInMessages: true,
         maxRetries: LLM_MAX_RETRIES,
+        // Bound the request (params.ts) — left unset, the SDK asks for the model's 128k default,
+        // which measurably increases Anthropic 529 "overloaded_error" exposure for no benefit (a
+        // claim is a few hundred tokens, never near this ceiling).
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
       }),
     );
 
@@ -389,6 +394,9 @@ export async function runDebate(
         messages,
         allowSystemInMessages: true,
         maxRetries: LLM_MAX_RETRIES,
+        // See runRole's identical cap above — same rationale, same ceiling (a revised claim plus
+        // a handful of directed responses is still small relative to the model's 128k default).
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
       }),
     );
 

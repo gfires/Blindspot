@@ -12,12 +12,13 @@ Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl ap
 | `src/lib/schemas/evidence.ts` | Evidence zod schema |
 | `src/lib/schemas/claim.ts` | Claim + DebateResponse / DebateTurnOutput zod schemas (debateRound, responses); `stance` (supports/opposes/insufficient) + `coerceStance` code clamp |
 | `src/lib/roles.ts` | THE role catalog — name, system prompt (persona), and model + redebateModel per committee role, in one place |
-| `src/lib/models/pricing.ts` | THE model catalog (`MODEL_CATALOG`) — provider + $/1M input/output per model id. eval.ts's cost estimator and the frontend cost display both read from here; add/swap a model in one place |
-| `src/lib/models/provider.ts` | Resolves a role/model id to its SDK model instance purely off pricing.ts's `provider` field; modelForRole()/modelForDebateRound() read roles.ts |
-| `src/lib/evidence/provider.ts` | THE SearchProvider seam — explore()/search()/webSearchRaw()/scrapeOneCached(), resolved to whichever backend evidence/config.ts's `SEARCH_PROVIDER` selects. Call sites import from here, never from a specific vendor's file |
-| `src/lib/evidence/config.ts` | Search/scrape tunables (intents, scrape depth, triage, provider concurrency) + the `SEARCH_PROVIDER` selector |
-| `src/lib/evidence/firecrawl.ts` | The default SearchProvider implementation (Firecrawl) |
-| `src/lib/evidence/exa.ts` | A second SearchProvider implementation (Exa) — flip `SEARCH_PROVIDER` in evidence/config.ts to use it |
+| `src/lib/pricing.ts` | THE pricing catalog — `MODEL_CATALOG` (provider + $/1M input/output per LLM model id) AND `SEARCH_PROVIDER_PRICING` (credits/search + credits/scrape per search/scrape provider). eval.ts's cost estimator and the frontend cost display read MODEL_CATALOG from here; evidence/firecrawl.ts + evidence/exa.ts read their credit rate from here |
+| `src/lib/models/provider.ts` | Resolves a role/model id to its SDK model instance purely off pricing.ts's `provider` field; modelForRole()/modelForDebateRound() read roles.ts; managerModel/gateModel/gateClassifierModel/digestModel/researcherModel (the non-committee-role models) read their ids from params.ts, never a literal string here |
+| `src/lib/evidence/provider.ts` | THE search/scrape seam — explore()/search()/webSearchRaw()/scrapeOneCached(), the ONE provider-agnostic pipeline (dedupe/triage/cache/scrape worker pool) composed over whichever `SearchOps`/`ScrapeOps` evidence/config.ts's `SEARCH_PROVIDER`/`SCRAPE_PROVIDER` select — independently configurable operations. Call sites import from here, never from a specific vendor's file |
+| `src/lib/evidence/config.ts` | Search/scrape tunables (intents, scrape depth, triage, provider concurrency) + the independent `SEARCH_PROVIDER`/`SCRAPE_PROVIDER` selectors (default: Exa search, Firecrawl scrape) |
+| `src/lib/evidence/firecrawl.ts` | The Firecrawl SearchOps/ScrapeOps implementation — `rawSearch`/`scrapeUrl`, the bare provider-specific network calls only |
+| `src/lib/evidence/exa.ts` | The Exa SearchOps/ScrapeOps implementation — `rawSearch`/`scrapeUrl`, mirroring firecrawl.ts |
+| `src/lib/evidence/candidates.ts` | Pure, provider-agnostic candidate selection (dedupeCandidates/capCandidatesPerQuery/selectCandidatesByScore) shared by evidence/provider.ts's pipelines |
 | `src/lib/evidence/store.ts` | In-memory Evidence store + contentHash |
 | `src/lib/orchestration/graph.ts` | StateGraph + runGraph() + synthesizeReport() |
 | `src/lib/orchestration/committee.ts` | runCommittee() (blind round-0 opening) + runDebate() (full debate loop) + buildCommitteeMessages/buildDebateMessages |
@@ -25,19 +26,23 @@ Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl ap
 | `src/lib/orchestration/digest.ts` | Per-question Haiku evidence digest (L2) — compresses each source to one item before the committee |
 | `src/lib/orchestration/gate.ts` | allocateBudget() — questionRoute() (route on committeeStance + named gap at zero LLM cost: settle unanimous, retrieve insufficient+gap, resolve interpretive fault lines) + VOI scoring; diminishingReturns (patience=1); gateShortCircuit() (budget / cost-headroom / max-loops / no-progress) |
 | `src/lib/orchestration/limiter.ts` | createLimiter() — per-model + Firecrawl FIFO concurrency caps |
-| `src/lib/orchestration/cost-tracker.ts` | Per-run USD cost cap via AsyncLocalStorage (runWithCostTracker) |
+| `src/lib/orchestration/cost-tracker.ts` | Per-run USD cost cap via AsyncLocalStorage (runWithCostTracker(fn, capOverride?) — the `--usd-budget` seam); getCap()/getSpent()/getRemaining() |
 | `src/lib/orchestration/eval.ts` | ArmResult types + runBaseline() + toAnnotatedUsage() (cache-aware cost) + rollupTokens() |
 | `src/lib/orchestration/mechanics.ts` | computeRunMechanics() + formatMechanicsReport() — per-run RUN MECHANICS report (retrieval, deliberation debated-vs-skipped + productive, cache-aware effort split, convergence) |
 | `src/lib/supabase.ts` | Supabase client backing the search/scrape/blocklist caches (`blindspot` schema; see `supabase/schema.sql`) |
-| `src/lib/params.ts` | Orchestration/gate-policy tunables (budget incl. per-loop reservation + $ cap, thresholds, loop limits, digest, prompt-cache, debate rounds, movement epsilon). Search/scrape tunables live in evidence/config.ts; role/model config lives in roles.ts + models/pricing.ts |
+| `src/lib/params.ts` | Orchestration/gate-policy tunables (`TOTAL_RETRIEVAL_BUDGET` — ONE combined search+scrape credit cap, incl. per-loop reservation + $ cap `MAX_RUN_COST_USD`, thresholds, loop limits, digest, prompt-cache, debate rounds, movement epsilon, `STRUCTURED_OUTPUT_MAX_TOKENS`/`SYNTHESIS_ANSWER_MAX_TOKENS` output-token ceilings). Also THE non-committee model-id catalog (`MANAGER_MODEL_ID`, `ANSWER_MODEL_ID`, `GATE_CLASSIFIER_MODEL_ID`, `DIGEST_MODEL_ID`, `RESEARCHER_MODEL_ID`) — models/provider.ts reads these, never a literal string. Search/scrape MECHANICS tunables live in evidence/config.ts; the four COMMITTEE roles' model config lives in roles.ts + pricing.ts |
 | `src/lib/prompts.ts` | Home for non-role-persona LLM prompt WORDING (CONFIDENCE_CALIBRATION, intake/decompose/digest/committee/debate/gate/answer builders). Nodes keep state-shaping; wording lives here. Role personas live in roles.ts |
-| `scripts/compare-arms.ts` | A/B comparison harness (accepts --budget) |
-| `src/lib/research-events.ts` | ResearchEvent union (SSE wire protocol for orchestration) |
-| `src/lib/orchestration/graph-stream.ts` | runGraphStreaming() — streaming graph runner |
+| `scripts/compare-arms.ts` | A/B comparison harness (accepts --budget, --usd-budget) |
+| `src/lib/research-events.ts` | ResearchEvent union (SSE wire protocol for orchestration), incl. `debate:opening`/`debate:round` (blind opening + conversational rounds) and the terminal `research:mechanics` |
+| `src/lib/orchestration/graph-stream.ts` | runGraphStreaming() — streaming graph runner; `transcriptToEvents()` maps the debate node's per-loop transcripts to `debate:opening`/`debate:round` |
 | `src/lib/useResearchStream.ts` | Frontend hook + reducer for research SSE |
+| `src/lib/useResearchReplay.ts` | Drives the SAME reducer over a static pre-recorded event array behind play/pause/scrub/speed |
+| `src/lib/research/board.ts` | Pure cell-derivation helpers for `QuestionBoard` (stance/verdict/scoping) — no LLM calls, unit-tested |
+| `src/lib/research/arena.ts` | `DebateArena`/`AgentSwimlane` pure graph + swimlane-cell builders (`debateRoundCells` keys by `debateRound`) |
 | `src/app/api/research/orchestrated/route.ts` | SSE endpoint for orchestrated research |
-| `src/components/research/` | Visualization components (PipelineGraph, AgentPanel, etc.) |
-| `scripts/run-arm.ts` | Single-arm runner (baseline or orchestrated, accepts --budget) |
+| `src/app/api/research/replay/route.ts` | Serves the committed replay fixture (`test/fixtures/replay-events.json`) |
+| `src/components/research/QuestionBoard.tsx` | Top-level question-centric swimlane board (`docs/question-board-spec.md`) — replaces the old `ResearchProgress`; recomposes the other research components as drill-downs |
+| `scripts/run-arm.ts` | Single-arm runner (baseline or orchestrated, accepts --budget, --usd-budget, --stream) |
 | `src/lib/orchestration/trace.ts` | TraceLogger — exhaustive run trace (prompts, responses, state) |
 
 ## Build & check
@@ -49,6 +54,7 @@ npm run smoke:supabase   # verify the Supabase cache round-trips (live but free)
 npm run compare -- "freight brokerage"              # run both arms
 npx tsx scripts/run-arm.ts orchestrated "freight brokerage"  # single arm
 npx tsx scripts/run-arm.ts baseline "freight brokerage" --budget=20  # with budget override (use --budget=N, not a space)
+npx tsx scripts/run-arm.ts agentic "freight brokerage" --usd-budget=0.25  # LLM $ cap override, independent of --budget
 ```
 
 `tsc` + `vitest` are the only zero-cost checks; everything below `smoke:supabase` spends API credits.
@@ -82,7 +88,7 @@ Key routing rules:
 ## Design principles
 
 - **Enforce in code, not prompts.** If a constraint can be checked or clamped programmatically, do it — don't rely on the LLM obeying a prompt instruction. Prompts are hints; code is guarantees. Examples: budget caps, enum membership, ID validation, range clamping.
-- **Prompt/model/config wording and tuning live in dedicated single-source-of-truth files, not scattered inline.** `src/lib/prompts.ts` holds non-role-persona LLM prompt WORDING (the prose analogue of `params.ts`) — calibration text, node instruction builders. `src/lib/roles.ts` holds each committee role's full config — name, persona/system prompt, AND model + redebateModel — together, since a role's identity and its model assignment are one configuration surface. `src/lib/models/pricing.ts` holds the model catalog (provider + $/1M pricing) everything else resolves against. `src/lib/evidence/config.ts` holds search/scrape tunables + the active `SEARCH_PROVIDER`. When tuning a persona, a model assignment, pricing, or a node's instructions, edit the file that owns it — orchestration nodes keep only state-shaping and pass computed pieces into builder functions. Don't reintroduce inline prompt strings, model ids, or pricing numbers in the nodes. Prompt/config transparency is a product requirement; one readable file per concern serves it.
+- **Prompt/model/config wording and tuning live in dedicated single-source-of-truth files, not scattered inline.** `src/lib/prompts.ts` holds non-role-persona LLM prompt WORDING (the prose analogue of `params.ts`) — calibration text, node instruction builders. `src/lib/roles.ts` holds each committee role's full config — name, persona/system prompt, AND model + redebateModel — together, since a role's identity and its model assignment are one configuration surface. `src/lib/pricing.ts` holds the model catalog (provider + $/1M pricing) AND the search/scrape provider credit rates (`SEARCH_PROVIDER_PRICING`) everything else resolves against. `src/lib/evidence/config.ts` holds search/scrape tunables + the independent active `SEARCH_PROVIDER`/`SCRAPE_PROVIDER`. When tuning a persona, a model assignment, pricing, or a node's instructions, edit the file that owns it — orchestration nodes keep only state-shaping and pass computed pieces into builder functions. Don't reintroduce inline prompt strings, model ids, or pricing numbers in the nodes. Prompt/config transparency is a product requirement; one readable file per concern serves it.
 - **No hard caps in LLM output schemas.** Never put `.min()`/`.max()` (lengths, counts, numeric ranges) on Zod schemas passed to `generateText`/`Output.object` — providers strip unsupported JSON-schema keywords, so the model never sees the limit, and client-side validation turns a slightly-long response into a run-killing `NoOutputGeneratedError`. Steer with `.describe()` hints; clamp in code after generation where the bound actually matters.
 - **No vibe floats.** Don't ask LLMs to produce made-up 0-1 scores (confidence, tractability, sensitivity) and then do math on them. The numbers look precise but are arbitrary. Prefer binary/categorical decisions from the LLM and compute quantitative signals from real data (gap counts, confidence spreads, evidence counts).
 - - **Disregard dev time.** When evaluating different approaches, don't consider perceived human dev time at all. Look exclusively for the most correct, consistent, concise, and elegant solution.

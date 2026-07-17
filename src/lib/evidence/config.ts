@@ -2,13 +2,16 @@
  * evidence/config.ts — every search/scrape tunable in one place, provider-agnostic.
  *
  * These are retrieval MECHANICS (how many results per query, how deep to scrape, when to triage)
- * that any SearchProvider implementation should respect — they don't belong to Firecrawl or Exa
- * specifically. Provider SELECTION (which implementation is active) also lives here as
- * SEARCH_PROVIDER, so swapping providers is a one-line edit. Provider-specific account throttles
- * (rate limits) live in PROVIDER_CONCURRENCY, keyed by provider id, since different vendors have
- * different ceilings.
+ * that any provider's SearchOps/ScrapeOps implementation should respect — they don't belong to
+ * Firecrawl or Exa specifically. Provider SELECTION (which implementation handles search, which
+ * handles scrape) also lives here as SEARCH_PROVIDER / SCRAPE_PROVIDER — two genuinely independent
+ * selectors, since search (finding URLs) and scrape (fetching page content) are now separately
+ * configurable operations (see docs/search-scrape-provider-split-spec.md). Provider-specific
+ * account throttles (rate limits) live in PROVIDER_CONCURRENCY, keyed by provider id, since
+ * different vendors have different ceilings and a provider's cap applies regardless of which
+ * operation(s) it's currently doing.
  *
- * Orchestration-level $-budget policy (MAX_RUN_COST_USD, TOTAL_FIRECRAWL_BUDGET,
+ * Orchestration-level $-budget policy (MAX_RUN_COST_USD, TOTAL_RETRIEVAL_BUDGET,
  * MAX_LOOP_SPEND_FRACTION, etc.) stays in params.ts — that's gate/loop STRATEGY, not retrieval
  * mechanics, and doesn't change when the provider does.
  */
@@ -17,10 +20,13 @@
 
 export type SearchProviderId = "firecrawl" | "exa";
 
-/** Which SearchProvider implementation (evidence/provider.ts) is active. Flip this one line to
- * swap Firecrawl for Exa — every call site resolves through evidence/provider.ts, not a direct
- * import of a specific provider's module, so nothing else needs to change. */
-export const SEARCH_PROVIDER: SearchProviderId = "firecrawl";
+/** Which provider's SearchOps (evidence/provider.ts) handles search (finding URLs+snippets).
+ * Independent of SCRAPE_PROVIDER — every call site resolves through evidence/provider.ts, not a
+ * direct import of a specific provider's module, so flipping this is a one-line edit. */
+export const SEARCH_PROVIDER: SearchProviderId = "exa";
+/** Which provider's ScrapeOps (evidence/provider.ts) handles scrape (fetching page content for a
+ * URL already selected by search+triage). Independent of SEARCH_PROVIDER. */
+export const SCRAPE_PROVIDER: SearchProviderId = "firecrawl";
 
 /**
  * Global in-flight request cap per provider, keyed by provider id. Firecrawl throttles to ~2

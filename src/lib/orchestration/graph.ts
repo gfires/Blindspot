@@ -35,8 +35,9 @@ import type { Evidence } from "../schemas/evidence";
 import type { Claim } from "../schemas/claim";
 import { managerModel, gateModel } from "../models/provider";
 import { type ArmResult, type AnnotatedUsage, toAnnotatedUsage, rollupTokens, estimateCostUsd } from "./eval";
-import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, TOTAL_FIRECRAWL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
-import { MAX_SEARCH_QUERIES_PER_QUESTION, resultsPerQuestionForLoop } from "../evidence/config";
+import { MIN_QUESTIONS, MAX_QUESTIONS, MAX_BRIEF_CONSTRAINTS, TOTAL_RETRIEVAL_BUDGET, MAX_LOOP_ITERATIONS, MAX_LOOP_SPEND_FRACTION, SYNTHESIS_ANSWER_MAX_TOKENS, STRUCTURED_OUTPUT_MAX_TOKENS, DIGEST_ENABLED, LLM_MAX_RETRIES } from "../params";
+import { MAX_SEARCH_QUERIES_PER_QUESTION, resultsPerQuestionForLoop, SEARCH_PROVIDER, SCRAPE_PROVIDER } from "../evidence/config";
+import { SEARCH_PROVIDER_PRICING } from "../pricing";
 // Re-exported so existing importers (e.g. graph.test.ts) keep resolving it here. The function itself
 // lives in evidence/config.ts so researcher.ts can import it for its per-pass evidence ceiling
 // without a circular import back into graph.ts.
@@ -182,6 +183,8 @@ export async function intake(state: ResearchStateT): Promise<Partial<ResearchSta
       output: Output.object({ schema: ResearchBriefSchema }),
       prompt,
       maxRetries: LLM_MAX_RETRIES,
+      // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+      maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
     });
 
     const annotated = toAnnotatedUsage(usage, managerModel.modelId, "intake");
@@ -263,6 +266,8 @@ export async function decompose(state: ResearchStateT): Promise<Partial<Research
     output: Output.object({ schema: DecompositionSchema }),
     prompt,
     maxRetries: LLM_MAX_RETRIES,
+    // Bound the request (params.ts) — see STRUCTURED_OUTPUT_MAX_TOKENS's comment.
+    maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
   });
 
   const annotated = toAnnotatedUsage(usage, managerModel.modelId, "decompose");
@@ -433,6 +438,8 @@ export async function retrieveAgentic(
     evidence: newEvidence,
     firecrawlCalls: passPool.calls,
     firecrawlCredits: credits,
+    searchCredits: passPool.spentSearch,
+    scrapeCredits: passPool.spentScrape,
     budgetRemaining: -credits,
     budgetSpent: credits,
     newEvidenceCount: newEvidence.length,
@@ -464,16 +471,20 @@ async function retrieveCoded(
   const k = resultsPerQuestionForLoop(state.loopIteration);
 
   // Reserve budget across the outer loop (layer 1): cap this pass at MAX_LOOP_SPEND_FRACTION of the
-  // run's INITIAL Firecrawl budget, so the broad first pass can't drain the pool and starve the
+  // run's INITIAL retrieval budget, so the broad first pass can't drain the pool and starve the
   // gap-targeted passes (where evidence has the highest marginal value). initialBudget is
-  // reconstructed from the additive remaining+spent deltas. Each query costs ~1 search (2 credits)
-  // plus up to `k` scrapes; cap the query count so this pass's worst-case spend fits the loop budget.
+  // reconstructed from the additive remaining+spent deltas. Each query costs ~1 search (at
+  // SEARCH_PROVIDER's rate) plus up to `k` scrapes (at SCRAPE_PROVIDER's rate) — read from
+  // SEARCH_PROVIDER_PRICING (pricing.ts), never hardcoded, so the estimate stays correct across a
+  // provider swap; cap the query count so this pass's worst-case spend fits the loop budget.
   const initialBudget = state.budgetRemaining + state.budgetSpent;
   const loopBudget = Math.min(
     state.budgetRemaining,
     Math.max(1, Math.ceil(initialBudget * MAX_LOOP_SPEND_FRACTION)),
   );
-  const estCreditsPerQuery = 2 + k;
+  const estCreditsPerQuery =
+    SEARCH_PROVIDER_PRICING[SEARCH_PROVIDER].creditsPerSearch +
+    k * SEARCH_PROVIDER_PRICING[SCRAPE_PROVIDER].creditsPerScrape;
   const maxQueries = Math.max(1, Math.floor(loopBudget / estCreditsPerQuery));
   if (queries.length > maxQueries) queries = queries.slice(0, maxQueries);
   // Under streamMode "custom", config.writer forwards live search/scrape progress
@@ -507,6 +518,8 @@ async function retrieveCoded(
     searchedQueries: queries,
     firecrawlCalls: queries.length,
     firecrawlCredits: totalCredits,
+    searchCredits,
+    scrapeCredits,
     budgetRemaining: -totalCredits,
     budgetSpent: totalCredits,
     newEvidenceCount: evidence.length,
@@ -904,11 +917,14 @@ export function runGraph(
   topic: string,
   budgetOverride?: number,
   retrievalMode: RetrievalMode = "coded",
+  // Overrides MAX_RUN_COST_USD (params.ts) for this run — the LLM $ cap, independent of
+  // budgetOverride (the search/scrape CREDIT cap). Undefined keeps the default.
+  usdBudgetOverride?: number,
 ): Promise<ArmResult> {
   // Run the whole graph inside a per-run cost tracker (AsyncLocalStorage) so every
   // getActiveCostTracker() in the async tree resolves to THIS run's tracker — two
   // concurrent runs never share or clobber each other's spend.
-  return runWithCostTracker(() => runGraphInner(topic, budgetOverride, retrievalMode));
+  return runWithCostTracker(() => runGraphInner(topic, budgetOverride, retrievalMode), usdBudgetOverride);
 }
 
 async function runGraphInner(
@@ -927,7 +943,7 @@ async function runGraphInner(
 
     try {
       finalState = await graph.invoke(
-        { topic, budgetRemaining: budgetOverride ?? TOTAL_FIRECRAWL_BUDGET, retrievalMode },
+        { topic, budgetRemaining: budgetOverride ?? TOTAL_RETRIEVAL_BUDGET, retrievalMode },
         { configurable: { thread_id: threadId }, recursionLimit: computeRecursionLimit(MAX_LOOP_ITERATIONS) },
       );
     } catch (err) {

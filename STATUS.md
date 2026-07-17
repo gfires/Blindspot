@@ -289,6 +289,32 @@ fixed, one full clean run confirmed every provider and price correct.
 
 tsc clean, next build clean, 421 vitest green across all of the above.
 
+**Cost-headroom guard was flat, not question-count-aware (2026-07-17).** A real live run ("AI agent
+infra", 4 questions, all genuinely contested — 2 debate rounds each, never converged) hit
+`gate:converged reason: cost-headroom` at loop 0 with 34/50 retrieval credits still unused — purely
+an LLM-$ cap issue, not a retrieval-credit one. Root cause: `gateShortCircuit` compared remaining
+$ headroom against a single flat `MIN_LOOP_COST_HEADROOM_USD = 0.25`, but loop 0's deliberation
+alone (committee opening + debate rounds across all 4 questions) cost $0.2337 — the flat threshold
+was already near the true cost of a full 4-question redebate, so a smaller flat number would have
+let a run like this one start a second loop it couldn't finish (mid-debate cap hit → LangGraph
+rollback → zero committed claims, worse than converging clean). Also, because
+`gateShortCircuit` returns before the (zero-LLM-cost) stance/contention classification ever runs,
+`gateScores` came back completely empty — the Gate cell showed a blank dash on all 4 questions
+instead of a real verdict, even though the classification costs nothing to compute.
+
+Fixed both: `MIN_LOOP_COST_HEADROOM_USD` replaced with `LOOP_COST_PER_QUESTION_USD = 0.08`
+(params.ts) — empirical, from this trace's $0.328 loop-0 cost ÷ 4 questions — and
+`gateShortCircuit` now requires `LOOP_COST_PER_QUESTION_USD × unresolvedCount` headroom instead of
+a flat number, so the same remaining $ is affordable for one still-open question but not four.
+`allocateBudget`'s short-circuit exit now also runs `classifyQuestion` (extracted as a shared
+helper, reused by the main stance-routing pass too) for every unresolved question and populates
+`gateScores` with `retrieve: false` entries carrying the real reason — "would retrieve (evidential
+contention), but converged (cost-headroom)" for a chase-able gap we couldn't afford, or the normal
+fault-line/limitation/settled reason for a genuinely resolved one. `retrieve` always stays `false`
+on a short-circuit exit regardless of what the classification says — we are not starting another
+cycle no matter what. Covered by `test/orchestration/gate.test.ts` (proportional-scaling test,
+short-circuit-classification test); 459 vitest green, tsc clean.
+
 ## Open issues
 
 - None blocking. Historian confabulation fix confirmed live (2026-07-14 traces: round-0 claims cite ids). Previous schema-crash, silent-retrieve, and cost-overcount issues resolved — see Done / Wave 2.

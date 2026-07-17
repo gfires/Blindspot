@@ -1,10 +1,24 @@
 "use client";
 
+import type { ReactNode } from "react";
 import type { ResearchUIState } from "@/lib/useResearchStream";
 import type { ResearchReport } from "@/lib/orchestration/graph";
 import type { AgentRoleT } from "@/lib/schemas/claim";
 import { QuestionBoard } from "./QuestionBoard";
 import { RunMechanicsReceipt } from "./RunMechanicsReceipt";
+
+/** Light cosmetic accent on the answer's [S#] citation labels — the labels themselves aren't
+ *  clickable (the S# → Evidence mapping answerObjective builds is a local prompt-building detail,
+ *  never surfaced on ResearchReport), just visually set apart from the prose. */
+function renderWithCitationStyling(text: string): ReactNode[] {
+  return text.split(/(\[S\d+\])/g).map((part, i) =>
+    /^\[S\d+\]$/.test(part) ? (
+      <span key={i} className="font-mono text-accent">{part}</span>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+}
 
 const ROLE_LABELS: Record<AgentRoleT, string> = {
   historian: "Historian",
@@ -49,7 +63,19 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
         </div>
       </div>
 
-      {/* Per-question results */}
+      {/* Answer — the headline. Everything below (per-question breakdown, cost, mechanics) is
+          supporting detail for this adjudication, not the other way around. */}
+      {report.answer && (
+        <div className="panel border-accent/30 p-6">
+          <div className="eyebrow mb-3 text-accent">Answer</div>
+          <p className="whitespace-pre-wrap text-base leading-relaxed text-fg">
+            {renderWithCitationStyling(report.answer)}
+          </p>
+        </div>
+      )}
+
+      {/* Per-question breakdown — supporting detail for the answer above */}
+      <div className="eyebrow px-1">Per-question breakdown</div>
       {report.questions.map(qr => (
         <div key={qr.question.id} className="panel p-4 space-y-3">
           <div className="flex items-start justify-between gap-3">

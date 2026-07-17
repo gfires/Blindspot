@@ -46,8 +46,19 @@ export async function POST(req: Request) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      // A client can disconnect (tab closed, network hiccup, dev-server reload) long before this
+      // run finishes — the run itself keeps going (graph-stream.ts owns persistence independent
+      // of who's listening), but enqueueing on a closed controller throws. Without this guard that
+      // throw was treated as a hard run failure (mislabeled "errored" in research_runs, aborting
+      // an otherwise-fine run) instead of just "nobody's watching anymore, keep going quietly."
+      let closed = false;
       const send = (event: ResearchEvent) => {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        } catch {
+          closed = true;
+        }
       };
       try {
         await runGraphStreaming(topic.trim(), send, clampedBudget, retrievalMode, clampedUsdBudget);
@@ -55,7 +66,13 @@ export async function POST(req: Request) {
         console.error("[research] orchestrated run failed:", err);
         send({ type: "research:error", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        controller.close();
+        if (!closed) {
+          try {
+            controller.close();
+          } catch {
+            // already closed by the runtime — nothing to do
+          }
+        }
       }
     },
   });

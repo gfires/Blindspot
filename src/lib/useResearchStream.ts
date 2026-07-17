@@ -568,6 +568,16 @@ export function useResearchStream() {
             }
           }
         }
+
+        // The stream ended (reader.read() returned done) without ever delivering a terminal
+        // event (recommend:done / research:error) — e.g. the connection dropped mid-run. Without
+        // this, `running` stays true forever: the UI just sits on whatever phase it last saw
+        // (e.g. "synthesizing final report...") with no way out but a manual reset.
+        setState(s =>
+          s.running
+            ? { ...s, running: false, phase: "done", error: "connection closed before the run finished" }
+            : s,
+        );
       } catch (err) {
         if (err instanceof DOMException && err.name === "AbortError") return;
         setState(s => ({

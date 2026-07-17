@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useScanStream } from "@/lib/useScanStream";
 import { useResearchStream } from "@/lib/useResearchStream";
@@ -39,11 +39,49 @@ export default function Home() {
   const scanShowError = scan.state.error && !scan.state.running;
   const scanShowProgress = scan.state.running || (!scan.state.report && !scan.state.error && scan.state.phase !== "idle");
 
-  // Research state derivation
+  // Research state derivation — the fullscreen board stays up through completion (it's already
+  // showing the finished, all-resolved state); the report pops up on top of it rather than
+  // replacing it with a different plain-page layout.
   const researchReport = research.state.report;
-  const researchShowReport = researchReport && !research.state.running;
+  const researchShowBoard = research.state.phase !== "idle" && !research.state.error;
   const researchShowError = research.state.error && !research.state.running;
-  const researchShowProgress = research.state.running || (!researchReport && !research.state.error && research.state.phase !== "idle");
+
+  // Auto-open the report the moment a NEW run finishes. graph-stream.ts now `await`s saveRun()
+  // BEFORE emitting recommend:done, so by the time this popup can possibly appear, the run is
+  // already a durable row in research_runs.
+  // A ref tracks which report we've already auto-opened for, so a user who closes the popup isn't
+  // fought back into it on every re-render — only a genuinely new report (a new run) reopens it.
+  const [showReportModal, setShowReportModal] = useState(false);
+  const autoOpenedFor = useRef<typeof researchReport>(null);
+  useEffect(() => {
+    if (researchReport && researchReport !== autoOpenedFor.current) {
+      autoOpenedFor.current = researchReport;
+      setShowReportModal(true);
+    } else if (!researchReport) {
+      autoOpenedFor.current = null;
+      setShowReportModal(false);
+    }
+  }, [researchReport]);
+
+  const researchHeaderExtra =
+    research.state.phase === "done" && researchReport ? (
+      <div className="flex items-center gap-2 font-mono text-xs">
+        {!showReportModal && (
+          <button
+            onClick={() => setShowReportModal(true)}
+            className="rounded border border-line px-2 py-1 text-mute transition hover:border-accent hover:text-accent"
+          >
+            view report
+          </button>
+        )}
+        <button
+          onClick={handleReset}
+          className="rounded border border-line px-2 py-1 text-mute transition hover:border-accent hover:text-accent"
+        >
+          new research →
+        </button>
+      </div>
+    ) : undefined;
 
   return (
     <main className="min-h-screen px-4 py-10 sm:py-16">
@@ -51,7 +89,7 @@ export default function Home() {
       {isIdle && (
         <div className="flex min-h-[70vh] flex-col items-center justify-center">
           <ScanInput onRun={handleRun} disabled={scan.state.running || research.state.running} mode={mode} onModeChange={setMode} />
-          <Leaderboard />
+          {mode === "scan" && <Leaderboard />}
           <Link
             href="/replay"
             className="mt-4 font-mono text-xs text-mute transition hover:text-accent"
@@ -71,16 +109,29 @@ export default function Home() {
       {/* Scan: report */}
       {scanShowReport && <ReportView report={scan.state.report!} scan={scan.state} onReset={handleReset} />}
 
-      {/* Research: live progress */}
-      {researchShowProgress && (
-        <div className="pt-4">
-          <QuestionBoard state={research.state} />
-        </div>
+      {/* Research: fullscreen board, live through completion */}
+      {researchShowBoard && (
+        <QuestionBoard state={research.state} done={!research.state.running} headerExtra={researchHeaderExtra} />
       )}
 
-      {/* Research: report */}
-      {researchShowReport && (
-        <ResearchReportView report={researchReport as ResearchReport} scan={research.state} onReset={handleReset} />
+      {/* Research: final report — pops up over the board the moment a run finishes */}
+      {showReportModal && researchReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm"
+          onClick={() => setShowReportModal(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-6xl animate-rise overflow-y-auto rounded-xl border border-line bg-panel p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 flex justify-end">
+              <button onClick={() => setShowReportModal(false)} className="text-xs text-mute hover:text-fg">
+                close ✕
+              </button>
+            </div>
+            <ResearchReportView report={researchReport as ResearchReport} scan={research.state} onReset={handleReset} />
+          </div>
+        </div>
       )}
 
       {/* Scan error */}

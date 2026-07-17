@@ -392,7 +392,6 @@ async function runGraphStreamingInner(
   if (degraded) {
     send({ type: "research:error", message: degradeMessage });
   }
-  send({ type: "recommend:done", report });
 
   trace.log("final_state", {
     topic,
@@ -420,7 +419,6 @@ async function runGraphStreamingInner(
   const rollupUsages = tracker ? tracker.getUsages() : allLlmCalls;
   const tokens = rollupTokens(rollupUsages);
   const mechanics = computeRunMechanics(trace.getEntries(), finalState, tokens);
-  send({ type: "research:mechanics", mechanics });
   const result = {
     arm: "orchestrated" as const,
     topic,
@@ -434,6 +432,16 @@ async function runGraphStreamingInner(
 
   await writeTrace();
 
+  // recommend:done/research:mechanics are built and folded into allEvents/trace here, but NOT sent
+  // to the live client yet — saveRun() below persists them (and everything before them) first. The
+  // UI auto-opens the report popup the instant recommend:done reaches it, so the run must already
+  // be a durable row in research_runs before that client-visible event fires, not racing it.
+  const recommendDoneEvent: ResearchEvent = { type: "recommend:done", report };
+  const mechanicsEvent: ResearchEvent = { type: "research:mechanics", mechanics };
+  trace.logEvent(recommendDoneEvent);
+  trace.logEvent(mechanicsEvent);
+  allEvents.push(recommendDoneEvent, mechanicsEvent);
+
   await saveRun({
     topic,
     status: "completed",
@@ -445,6 +453,9 @@ async function runGraphStreamingInner(
     events: allEvents,
     mechanics,
   });
+
+  originalSend(recommendDoneEvent);
+  originalSend(mechanicsEvent);
 
   return result;
 }

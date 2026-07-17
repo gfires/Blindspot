@@ -1,19 +1,63 @@
 import { anthropic } from "@ai-sdk/anthropic";
 import { openai } from "@ai-sdk/openai";
+import { google } from "@ai-sdk/google";
 import type { AgentRoleT } from "../schemas/claim";
+import { ROLES } from "../roles";
+import {
+  RESEARCHER_MODEL_ID,
+  MANAGER_MODEL_ID,
+  ANSWER_MODEL_ID,
+  GATE_CLASSIFIER_MODEL_ID,
+  DIGEST_MODEL_ID,
+} from "../params";
+import { MODEL_CATALOG, type ModelProviderT } from "../pricing";
 
-// Your explicit model mix decision, in one place
-const ROLE_MODEL: Record<AgentRoleT, ReturnType<typeof anthropic> | ReturnType<typeof openai>> = {
-  historian: anthropic("claude-sonnet-5"),
-  operator: anthropic("claude-sonnet-5"),
-  investor: anthropic("claude-sonnet-5"),
-  skeptic: openai("gpt-4o"),   // deliberately different family — genuine adversarial check
+const PROVIDER_FACTORIES: Record<ModelProviderT, (id: string) => ReturnType<typeof anthropic>> = {
+  anthropic,
+  openai,
+  google,
 };
 
-export function modelForRole(role: AgentRoleT) {
-  return ROLE_MODEL[role];
+/**
+ * Resolve a model id string to its SDK model instance, purely off MODEL_CATALOG's `provider`
+ * field (pricing.ts). Swapping or adding a model is a catalog edit, never a code change here —
+ * an id missing from the catalog throws immediately (fail loud on a typo, not a silent $0
+ * cost estimate downstream in eval.ts).
+ */
+function modelFromId(id: string) {
+  const entry = MODEL_CATALOG[id];
+  if (!entry) {
+    throw new Error(`modelFromId: "${id}" is not in MODEL_CATALOG (pricing.ts) — add it there first.`);
+  }
+  return PROVIDER_FACTORIES[entry.provider](id);
 }
 
-// manager + gate use a cheap/fast model for triage-y work
-export const managerModel = anthropic("claude-sonnet-5");
-export const gateModel = anthropic("claude-sonnet-5");
+/**
+ * The model for a committee role. Loop 0 uses ROLES[role].model; re-debates (loopIteration > 0)
+ * use ROLES[role].redebateModel. Role config lives in roles.ts.
+ */
+export function modelForRole(role: AgentRoleT, loopIteration = 0) {
+  const id = loopIteration > 0 ? ROLES[role].redebateModel : ROLES[role].model;
+  return modelFromId(id);
+}
+
+/**
+ * The model for a role in a given DEBATE round (Wave 3). Round 0 is the deep opening and keeps
+ * the loop-aware mix (delegates to modelForRole with the retrieval loop); conversational rounds
+ * (>=1) are declining-marginal-value refinements, so every role drops to its redebateModel.
+ */
+export function modelForDebateRound(role: AgentRoleT, debateRound: number, loopIteration = 0) {
+  if (debateRound === 0) return modelForRole(role, loopIteration);
+  return modelFromId(ROLES[role].redebateModel);
+}
+
+export const managerModel = anthropic(MANAGER_MODEL_ID);
+// NOT the gate decision model (see gateClassifierModel below) — this runs the recommend node's
+// final ANSWER call. Kept as `gateModel` (legacy name, predates the stance-routing gate) to avoid
+// an unrelated rename; see ANSWER_MODEL_ID's comment in params.ts.
+export const gateModel = anthropic(ANSWER_MODEL_ID);
+export const gateClassifierModel = openai(GATE_CLASSIFIER_MODEL_ID);
+// L2 evidence digest: cheap, fast model to compress each source before the committee.
+export const digestModel = anthropic(DIGEST_MODEL_ID);
+// The agentic-retrieval researcher agent (P3): Haiku for search planning, not deep reasoning.
+export const researcherModel = anthropic(RESEARCHER_MODEL_ID);

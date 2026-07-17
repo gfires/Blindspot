@@ -10,6 +10,7 @@ export interface Evidence {
   contentHash: string;
   sourceQuery: string;
   loopIteration: number;
+  questionId?: string;
 }
 
 const store = new Map<string, Evidence>();

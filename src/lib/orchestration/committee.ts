@@ -8,156 +8,219 @@
  * construction, the manager can treat convergence across roles as real signal and divergence
  * as an open question worth more retrieval.
  *
- * FOR FUTURE AGENTS: The system prompts live here IN FULL and readable (prompt transparency is
- * a product requirement). Confidence is the load-bearing output — every prompt is explicit that
- * confidence must be *earned* by evidence, not asserted. See CONFIDENCE_CALIBRATION below; it is
- * shared verbatim across all four roles so the calibration bar is identical regardless of model.
+ * FOR FUTURE AGENTS: All prompt WORDING now lives in one readable place — src/lib/prompts.ts
+ * (prompt transparency is a product requirement). This file keeps the state-shaping and the
+ * cache/ModelMessage plumbing. Confidence is the load-bearing output — every prompt is explicit
+ * that confidence must be *earned* by evidence, not asserted. See CONFIDENCE_CALIBRATION in
+ * prompts.ts; it is shared verbatim across all four roles so the calibration bar is identical
+ * regardless of model.
  *
  * The skeptic deliberately runs on a different model family (see models/provider.ts) so the
  * adversarial check is not just a re-prompt of the same weights.
  */
-import { generateObject } from "ai";
-import { ClaimSchema, type Claim, type AgentRoleT } from "../schemas/claim";
+import { generateText, Output, type ModelMessage } from "ai";
+import { ClaimOutputSchema, DebateTurnOutputSchema, coerceStance, type Claim, type AgentRoleT } from "../schemas/claim";
 import type { Evidence } from "../schemas/evidence";
 import type { Question } from "../schemas/state";
-import { modelForRole } from "../models/provider";
+import { modelForRole, modelForDebateRound } from "../models/provider";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
-
-/**
- * Calibration rules appended to every role prompt. Kept identical across roles so that a
- * confidence of 0.8 means the same thing whoever said it. This is the single most important
- * instruction in the file — the whole loop keys off calibrated confidence.
- */
-const CONFIDENCE_CALIBRATION = `
-CONFIDENCE CALIBRATION — read carefully, this is the most important part of your answer.
-Your \`confidence\` is a probability (0.0–1.0) that your conclusion is correct. It must be EARNED
-by the evidence you were given, not by how plausible your reasoning feels. Follow these rules:
-
-- Anchor LOW and let evidence raise you. With no supporting evidence, you start near 0.2, not 0.5.
-- Penalize sparsity: if supportingEvidenceIds has 0–1 entries, your confidence MUST stay below 0.5.
-  Two-to-three independent, on-point sources is the floor for confidence above 0.6.
-- Penalize contradiction HARD: if contradictingEvidenceIds is non-empty, cap confidence at 0.6, and
-  drop further for every credible source that cuts against you. A single strong contradiction that
-  you cannot explain away should pull you below 0.4.
-- Weak, tangential, or off-topic sources do not count as support. Do not cite an id just to pad the
-  list — only include ids that genuinely bear on THIS conclusion.
-- If the evidence simply does not let you answer, say so: give a low-confidence conclusion and put the
-  real gaps in missingEvidence. A calibrated "I don't know yet" is more valuable than a confident guess.
-- Reserve confidence above 0.85 for conclusions with multiple strong, mutually-reinforcing sources and
-  no unresolved contradiction. That should be rare.
-
-Only reference evidence by its exact id string. Never invent ids and never inline source text.
-`.trim();
-
-/** Distinct incentive for each role. The differences here are the entire point of the committee. */
-const ROLE_SYSTEM_PROMPTS: Record<AgentRoleT, string> = {
-  historian: `
-You are the HISTORIAN on a research committee evaluating a business opportunity.
-
-Your incentive is PRECEDENT. You do not care whether an idea sounds good; you care whether it (or
-something close to it) has been tried before, and what actually happened. Your value to the committee
-is memory the others lack.
-
-For the question asked, hunt the evidence for:
-- Prior attempts, competitors, adjacent products, or historical analogues. Who tried this shape of thing?
-- Outcomes: did they succeed, stall, pivot, or die — and specifically WHY. "Too early", "no distribution",
-  "regulation changed", "incumbent bundled it for free" are the kinds of answers you look for.
-- Repeating patterns across attempts. If three prior entrants all died the same way, that is a strong signal.
-- What is genuinely different NOW (technology, cost curve, regulation, behavior) that could change the outcome
-  versus what is just this cycle's founders assuming they are smarter than the last cohort.
-
-Be concrete about the historical record. If the evidence contains no real precedent, say that plainly and
-keep confidence low — absence of history is itself a finding, not a license to speculate.
-`.trim(),
-
-  operator: `
-You are the OPERATOR on a research committee evaluating a business opportunity.
-
-Your incentive is REALITY ON THE GROUND. You have run this kind of workflow. You care about what actually
-breaks in the day-to-day — the steps that look trivial on a slide and consume hours in practice.
-
-For the question asked, hunt the evidence for:
-- The real workflow today: who does what, in what order, with which tools, and where the friction lives.
-- The failure modes an outsider misses: edge cases, exceptions, handoffs, compliance steps, "the customer
-  always sends it as a scanned PDF", the 20% of cases that are 80% of the pain.
-- Adoption friction: switching cost, training, integration with the systems people already refuse to leave,
-  and the political reasons a working solution still doesn't get bought.
-- Whether a proposed solution survives contact with a messy Tuesday, not a clean demo.
-
-Be specific about mechanism — name the step that breaks and why. If the evidence doesn't actually show you the
-operational detail, don't assume it works smoothly; flag the gap and keep confidence low.
-`.trim(),
-
-  investor: `
-You are the INVESTOR on a research committee evaluating a business opportunity.
-
-Your incentive is RETURN. You are deciding whether to put capital behind this. A real pain point is
-necessary but not sufficient — you care whether there is a fundable BUSINESS here and what the return
-profile looks like.
-
-For the question asked, hunt the evidence for:
-- Market size and structure: how many buyers, how reachable, how concentrated. Is this a venture-scale market
-  or a nice lifestyle business?
-- Willingness and ability to pay: real budget signals, existing spend, deal sizes, contract lengths. Money
-  already changing hands beats stated interest.
-- The return shape: margins, defensibility (moat, network effects, switching cost), and a credible path from
-  wedge to a much larger outcome. Where does this go if it works?
-- The downside: what makes this uninvestable — commoditization, incumbent bundling, regulatory ceilings,
-  or a market too small to matter even if you win it.
-
-Think in terms of a portfolio bet, not enthusiasm. If the evidence doesn't support a fundable return, say so;
-a well-calibrated "not investable on this evidence" is a valid and useful conclusion.
-`.trim(),
-
-  skeptic: `
-You are the SKEPTIC on a research committee evaluating a business opportunity.
-
-Your incentive is DISCONFIRMATION. Assume the historian, operator, and investor are all too optimistic —
-that is your working prior. Your job is not to be balanced; it is to actively hunt for the reasons this
-FAILS. If the idea is genuinely strong it will survive you, and then the committee can trust it.
-
-For the question asked, attack the evidence:
-- Find the strongest reason this does not work: no real demand, a workable status quo, a fatal unit economic,
-  a regulatory wall, a distribution problem with no answer.
-- Interrogate the evidence quality itself: thin sourcing, vendor marketing masquerading as demand, survivorship
-  bias, correlation dressed as causation, sample of one. Weak evidence for a claim IS a reason to doubt it.
-- Steelman the objections others will wave away. Name the specific scenario in which committing to this is a mistake.
-- Refuse to be charitable by default. If something is merely plausible but unproven, treat it as unproven.
-
-Your conclusion should state the most credible way this fails and how likely that is. You may be right that it is
-robust — but only say so if the evidence forced you there against your own effort to break it.
-`.trim(),
-};
+import { getActiveTrace } from "./trace";
+import { getActiveCostTracker } from "./cost-tracker";
+import {
+  MAX_EVIDENCE_CHARS_PER_AGENT,
+  PROMPT_CACHE_MIN_CHARS,
+  LLM_MAX_RETRIES,
+  MAX_DEBATE_ROUNDS,
+  DEBATE_CONFIDENCE_EPSILON,
+  STRUCTURED_OUTPUT_MAX_TOKENS,
+} from "../params";
+// Prompt WORDING lives in one place (src/lib/prompts.ts). This file keeps the state-shaping and
+// the cache/ModelMessage plumbing; the shared system prefix and the per-role user messages are
+// assembled there from the pieces computed here.
+import {
+  NO_EVIDENCE_NOTICE,
+  stableSystemHead,
+  committeeUserMessage,
+  debateUserMessage,
+} from "../prompts";
+import { formatDigestForCommittee, type DigestItem } from "./digest";
+import { limiterForModel } from "./limiter";
+import { renderTranscript, hasGenuineDisagreement, debateMovement, directedChallenges, type DebateRound } from "./debate";
 
 const ROLES: AgentRoleT[] = ["historian", "operator", "investor", "skeptic"];
 
-/** Render the relevant evidence as an id-labeled block the model can cite by id. */
 function formatEvidence(evidence: Evidence[]): string {
   if (evidence.length === 0) {
-    return "(no evidence was retrieved for this question yet — you must reflect that in low confidence)";
+    return NO_EVIDENCE_NOTICE;
   }
-  return evidence
-    .map(
-      (e) =>
-        `[${e.id}] ${e.title}\n  url: ${e.url}\n  snippet: ${e.snippet}`,
-    )
-    .join("\n\n");
+  let totalChars = 0;
+  const blocks: string[] = [];
+  for (const e of evidence) {
+    const block = `[${e.id}] ${e.title}\n  url: ${e.url}\n  snippet: ${e.snippet}\n\n${e.content}`;
+    if (totalChars + block.length > MAX_EVIDENCE_CHARS_PER_AGENT && blocks.length > 0) break;
+    blocks.push(block);
+    totalChars += block.length;
+  }
+  return blocks.join("\n\n---\n\n");
 }
 
-/** Build the per-role user prompt: the question, the calibration rules, and the citable evidence. */
-function buildUserPrompt(question: Question, evidence: Evidence[]): string {
-  return [
-    `QUESTION (${question.category}): ${question.text}`,
-    "",
-    "EVIDENCE — cite only by the bracketed id, e.g. supportingEvidenceIds: [\"<id>\"]:",
-    formatEvidence(evidence),
-    "",
-    CONFIDENCE_CALIBRATION,
-    "",
-    "Render your independent Claim now. Fill conclusion, confidence, supportingEvidenceIds,",
-    "contradictingEvidenceIds, and missingEvidence. The id, questionId, agentRole, and loopIteration",
-    "fields are assigned by the system — leave them as empty strings / 0.",
-  ].join("\n");
+/**
+ * Partition evidence into what arrived THIS loop (`fresh`) versus earlier loops (`prior`),
+ * keyed on Evidence.loopIteration. `currentLoop` is the loop the committee is debating.
+ * The debate node uses `.fresh` to decide what to digest (old evidence is never re-digested).
+ * Exported for direct unit testing.
+ */
+export function splitEvidence(
+  evidence: Evidence[],
+  currentLoop: number,
+): { fresh: Evidence[]; prior: Evidence[] } {
+  const fresh: Evidence[] = [];
+  const prior: Evidence[] = [];
+  for (const e of evidence) {
+    (e.loopIteration === currentLoop ? fresh : prior).push(e);
+  }
+  return { fresh, prior };
+}
+
+/**
+ * Serialize the shared system prefix into AI-SDK `system` messages, placing Anthropic
+ * prompt-cache breakpoints for CROSS-round reuse.
+ *
+ * The bug this fixes: a single `cacheControl` on ONE system message that GROWS every round
+ * (stable head + an ever-longer transcript) makes each round write a fresh cache entry keyed to
+ * the whole block. Anthropic only re-reads a cached prefix AT a breakpoint, and the sole
+ * breakpoint sat at the moving tail — so nothing was ever re-read across rounds and the cache
+ * read/write ratio was pinned at exactly 2.0 (within-round only: 1 historian write + 2 reads).
+ *
+ * The fix adds a second breakpoint at the STABLE head boundary. The head (objective + question +
+ * evidence + calibration) is byte-identical across every debate round AND across the opening
+ * committee round, so Anthropic serves that large block from cache on every call instead of
+ * re-billing it each round. When `tailText` is present (a debate round), the head and the growing
+ * transcript become two consecutive `system` messages; @ai-sdk/anthropic merges consecutive
+ * system messages into ONE top-level `system` array (one text block + `cache_control` each), so
+ * this stays a normal cached system prompt — NOT a mid-conversation system message — with two
+ * breakpoints, well under Anthropic's limit of four. The trailing breakpoint on the transcript
+ * still gives the within-round reuse across the three Claude roles that already worked.
+ *
+ * When caching is off (the OpenAI skeptic, or a prefix below PROMPT_CACHE_MIN_CHARS) the prefix
+ * stays a single plain `system` message with no providerOptions — byte-for-byte the pre-fix
+ * shape (head+tail concatenated), so the skeptic/OpenAI path and small prompts are untouched.
+ */
+function cacheableSystemMessages(
+  headText: string,
+  tailText: string | null,
+  cacheable: boolean,
+): ModelMessage[] {
+  if (!cacheable) {
+    return [{ role: "system", content: tailText === null ? headText : headText + tailText }];
+  }
+  const cc = { providerOptions: { anthropic: { cacheControl: { type: "ephemeral" as const } } } };
+  const head: ModelMessage = { role: "system", content: headText, ...cc };
+  return tailText === null ? [head] : [head, { role: "system", content: tailText, ...cc }];
+}
+
+/**
+ * Build the AI-SDK messages for one committee role, structured for Anthropic prompt-cache
+ * hits (L3).
+ *
+ * The `system` message is a shared prefix — question + evidence/digest block + the
+ * confidence calibration — that is BYTE-IDENTICAL across the three Claude roles (nothing
+ * role-specific leaks in), so Anthropic serves it from cache after the first role writes it.
+ * The role persona and the task instructions (and, on a re-debate, the role's own prior
+ * claim) live in the `user` message, where they vary per role without disturbing the cache.
+ *
+ * cacheControl is attached only above PROMPT_CACHE_MIN_CHARS (a tiny prefix isn't worth
+ * caching) and only for the Claude roles — the skeptic runs on OpenAI and gets no anthropic
+ * providerOptions. `currentLoop` is part of the signature for callers that key cache reuse
+ * on the loop; the prompt text itself doesn't branch on it.
+ *
+ * `objective` (the intake ResearchBrief's objective) is prepended as a short RESEARCH OBJECTIVE
+ * block to the SHARED system prefix. It is topic-level — identical across the three Claude roles —
+ * so the byte-identical-across-roles cache invariant (L3) still holds. It is CONTEXT that points
+ * the existing roles at the real ask (the skeptic can attack the actual bet); it does NOT touch
+ * ROLE_SYSTEM_PROMPTS, which stay in the per-role user message unchanged.
+ */
+export function buildCommitteeMessages(
+  role: AgentRoleT,
+  question: Question,
+  evidenceBlock: string,
+  currentLoop: number,
+  priorClaim?: Claim,
+  objective = "",
+): ModelMessage[] {
+  void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
+
+  // Round 0 has no transcript, so the stable head IS the whole shared prefix — a single cache
+  // block. It is byte-identical to the head the debate rounds emit, so debate round 1 reads this
+  // opening round's evidence + calibration from cache. See cacheableSystemMessages.
+  const headText = stableSystemHead(objective, question, evidenceBlock).join("\n");
+
+  // Cache the shared prefix for the Claude roles once it's big enough to be worth it.
+  // The skeptic (OpenAI) never carries anthropic providerOptions.
+  const cacheable = role !== "skeptic" && headText.length > PROMPT_CACHE_MIN_CHARS;
+  const system = cacheableSystemMessages(headText, null, cacheable);
+
+  const user: ModelMessage = { role: "user", content: committeeUserMessage(role, priorClaim) };
+
+  return [...system, user];
+}
+
+/**
+ * Build the AI-SDK messages for one role's CONVERSATIONAL turn (debate round ≥1), structured to
+ * preserve the L3 prompt cache exactly as the opening round does.
+ *
+ * The `system` prefix is the stable head (objective + question + evidence/digest block + confidence
+ * calibration) followed by the rendered transcript of all PRIOR rounds — BYTE-IDENTICAL across the
+ * three Claude roles. For the Claude roles it is emitted as TWO consecutive `system` messages so the
+ * head carries its OWN Anthropic cache breakpoint (served from cache across ALL rounds, including the
+ * opening committee round) in addition to the trailing breakpoint on the transcript (within-round
+ * reuse across roles). See cacheableSystemMessages for why the head breakpoint is the cross-round win.
+ * The transcript is deterministic, role-independent, and append-only (see renderTranscript /
+ * stableSystemHead). The per-role material (the challenges aimed at this role, this role's own prior
+ * turn, and the task) all lives in the `user` message. cacheControl is attached only above
+ * PROMPT_CACHE_MIN_CHARS and never for the skeptic (OpenAI).
+ *
+ * `transcript` is every round rendered so far; its LAST round supplies the challenges this role must
+ * answer. `priorTurn` is this role's most recent claim, which it is revising.
+ */
+export function buildDebateMessages(
+  role: AgentRoleT,
+  question: Question,
+  evidenceBlock: string,
+  transcript: DebateRound[],
+  priorTurn: Claim | undefined,
+  currentLoop: number,
+  objective = "",
+): ModelMessage[] {
+  void currentLoop; // reserved: reuse is keyed on prefix identity, not the loop number
+
+  // Stable head first (objective + question + evidence + calibration), then the GROWING transcript
+  // as a SEPARATE cache block. The head gets its OWN breakpoint (cacheableSystemMessages), so
+  // Anthropic serves it from cache on every round — and from the opening committee round — instead
+  // of re-billing the whole ~16k-char prefix every round behind a single trailing breakpoint (the
+  // read/write-ratio-stuck-at-2.0 bug). The trailing breakpoint on the transcript keeps within-round
+  // reuse across the three Claude roles. `tailText` reproduces the pre-fix bytes (head + tail is the
+  // exact old single-string prefix) so nothing but the breakpoint placement changes.
+  const headText = stableSystemHead(objective, question, evidenceBlock).join("\n");
+  const tailText = ["", "", "DEBATE SO FAR (all prior rounds):", renderTranscript(transcript)].join("\n");
+
+  const cacheable =
+    role !== "skeptic" && headText.length + tailText.length > PROMPT_CACHE_MIN_CHARS;
+  const system = cacheableSystemMessages(headText, tailText, cacheable);
+
+  // Challenges aimed at THIS role, in the latest round — directedChallenges is the single source of
+  // truth and tags each with the peer that raised it (its `from`), so we render who challenged whom.
+  const latestRound = transcript[transcript.length - 1];
+  const challengeLines = (latestRound ? directedChallenges(latestRound, role) : []).map(
+    ({ from, response }) => `[${from}] ${response.stance}s your position (${response.stance}): ${response.point}`,
+  );
+
+  const user: ModelMessage = {
+    role: "user",
+    content: debateUserMessage({ role, challengeLines, priorTurn }),
+  };
+
+  return [...system, user];
 }
 
 /** The four independent role Claims for one question, plus each call's token usage. */
@@ -168,37 +231,220 @@ export interface CommitteeResult {
 
 /**
  * Run the full four-role committee against one question and its relevant evidence.
- * Each role is called in parallel with its own model and produces one calibrated Claim.
+ * Each role produces one calibrated Claim on its own model.
+ *
+ * Execution is STAGGERED for cache hits: the historian runs first and WRITES the shared
+ * system prefix into Anthropic's cache; operator, investor and skeptic then run together,
+ * with the two remaining Claude roles READING that cached prefix. (The skeptic is OpenAI
+ * and unaffected by the cache, but runs in the same second wave.)
  */
 export async function runCommittee(
   question: Question,
   evidence: Evidence[],
+  priorClaims: Claim[] = [],
+  digestItems: DigestItem[] = [],
+  objective = "",
 ): Promise<CommitteeResult> {
   // The loop iteration this claim belongs to = the most recent retrieval round it can see.
   const loopIteration = evidence.reduce((max, e) => Math.max(max, e.loopIteration), 0);
 
-  const results = await Promise.all(
-    ROLES.map(async (role): Promise<{ claim: Claim; usage: AnnotatedUsage }> => {
-      const model = modelForRole(role);
-      const { object, usage } = await generateObject({
+  // Every role sees the same evidence block: the digest when we have one, else raw
+  // evidence (digest disabled or the digest call failed — a run must survive either).
+  const evidenceBlock = digestItems.length > 0
+    ? formatDigestForCommittee(evidence, digestItems)
+    : formatEvidence(evidence);
+
+  const runRole = async (role: AgentRoleT): Promise<{ claim: Claim; usage: AnnotatedUsage }> => {
+    const costTracker = getActiveCostTracker();
+    costTracker?.check();
+
+    // Loop 0 uses the full model mix; re-debates drop the Claude roles to Haiku (L4).
+    const model = modelForRole(role, loopIteration);
+    // This role's most recent prior claim, if any — drives the incremental re-debate
+    // prompt ("update this claim against the new evidence").
+    const priorClaim = priorClaims
+      .filter((c) => c.agentRole === role)
+      .sort((a, b) => b.loopIteration - a.loopIteration)[0];
+    const messages = buildCommitteeMessages(role, question, evidenceBlock, loopIteration, priorClaim, objective);
+    // Cap concurrency per model (L6) so a committee fan-out can't trip gpt-4o's TPM limit,
+    // and retry transient provider errors.
+    const { output: object, usage } = await limiterForModel(model.modelId)(() =>
+      generateText({
         model,
-        schema: ClaimSchema,
-        system: ROLE_SYSTEM_PROMPTS[role],
-        prompt: buildUserPrompt(question, evidence),
-      });
+        output: Output.object({ schema: ClaimOutputSchema }),
+        messages,
+        // buildCommitteeMessages puts the cacheable shared prefix in a `system` message so
+        // Anthropic can cache it; the SDK forbids system messages in `messages` unless we
+        // opt in here (otherwise: AI_InvalidPromptError "System messages are not allowed").
+        allowSystemInMessages: true,
+        maxRetries: LLM_MAX_RETRIES,
+        // Bound the request (params.ts) — left unset, the SDK asks for the model's 128k default,
+        // which measurably increases Anthropic 529 "overloaded_error" exposure for no benefit (a
+        // claim is a few hundred tokens, never near this ceiling).
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+      }),
+    );
 
-      // Stamp the authoritative, system-owned fields — never trust the model for identity/bookkeeping.
-      const claim: Claim = {
-        ...object,
-        id: `${question.id}:${role}:${loopIteration}`,
-        questionId: question.id,
-        agentRole: role,
-        loopIteration,
-      };
+    const annotated = toAnnotatedUsage(usage, model.modelId, `committee:${role}`);
+    costTracker?.record(annotated);
 
-      return { claim, usage: toAnnotatedUsage(usage, model.modelId, `committee:${role}`) };
-    }),
+    const trace = getActiveTrace();
+    if (trace) {
+      trace.logLlmCall(`committee:${role}`, { model: model.modelId, loopIteration, prompt: messages }, object, usage);
+    }
+
+    const claim: Claim = {
+      ...object,
+      // Schema no longer hard-caps these (providers don't enforce them);
+      // clamp here so downstream math and the gate see bounded values.
+      confidence: Math.max(0, Math.min(1, object.confidence)),
+      // Enforce stance validity in code (missing/invalid → abstention), never trusting the model.
+      stance: coerceStance(object.stance),
+      missingEvidence: object.missingEvidence.slice(0, 3),
+      id: `${question.id}:${role}:${loopIteration}`,
+      questionId: question.id,
+      agentRole: role,
+      loopIteration,
+      // runCommittee produces the independent OPENING round; runDebate (D4) drives the
+      // conversational rounds that populate responses.
+      debateRound: 0,
+      responses: [],
+    };
+
+    return { claim, usage: annotated };
+  };
+
+  // Historian first (cache write), then the rest in parallel (cache read for the Claude roles).
+  const historian = await runRole("historian");
+  const rest = await Promise.all(
+    ROLES.filter((r) => r !== "historian").map(runRole),
   );
+  const results = [historian, ...rest];
 
   return { claims: results.map((r) => r.claim), usage: results.map((r) => r.usage) };
+}
+
+/** The full debate for one question: durable final claims, every round's transcript, and usages. */
+export interface DebateResult {
+  /** The FINAL round's claims — the durable positions that cross the retrieval boundary. */
+  claims: Claim[];
+  /** Every round (0 = opening, then conversational), for the transcript channel + reporting. */
+  rounds: DebateRound[];
+  usage: AnnotatedUsage[];
+}
+
+/**
+ * Run the committee as a REAL debate over one question and its (frozen) evidence.
+ *
+ * Round 0 is the existing independent opening (runCommittee): four blind claims, which preserves the
+ * historian-confabulation fix and makes cross-role agreement real signal. If those openings show no
+ * GENUINE disagreement (hasGenuineDisagreement) we stop there — no debate is worth running. Otherwise
+ * each role reads the
+ * full prior transcript and the challenges aimed at it and revises across conversational rounds,
+ * conceding ONLY to evidence. Each round is staggered exactly like round 0 (historian first to write
+ * the shared cached prefix, the rest in parallel to read it) so the L3 cache still hits, and uses the
+ * declining-cost model mix (modelForDebateRound). The debate stops when a round doesn't move any
+ * position or open a fresh rebuttal (debateMovement) or at MAX_DEBATE_ROUNDS. Evidence never changes
+ * mid-debate; only the outer retrieval loop adds evidence.
+ */
+export async function runDebate(
+  question: Question,
+  evidence: Evidence[],
+  priorClaims: Claim[] = [],
+  digestItems: DigestItem[] = [],
+  objective = "",
+): Promise<DebateResult> {
+  const loopIteration = evidence.reduce((max, e) => Math.max(max, e.loopIteration), 0);
+  const evidenceBlock = digestItems.length > 0
+    ? formatDigestForCommittee(evidence, digestItems)
+    : formatEvidence(evidence);
+
+  // Round 0 — the independent opening (blind), identical to today's committee pass.
+  const opening = await runCommittee(question, evidence, priorClaims, digestItems, objective);
+  const rounds: DebateRound[] = [{ round: 0, claims: opening.claims }];
+  const usage: AnnotatedUsage[] = [...opening.usage];
+
+  // Skip the conversational rounds unless the blind openings show GENUINE disagreement — ≥2 decisive
+  // stances or an id-clash (hasGenuineDisagreement). Unanimous lean, one lean plus abstentions, or
+  // shared uncertainty all mean there's nothing to resolve, so we return the round-0 claims as final
+  // (exactly as the old consensus fast-path did) and let the gate route the agreement (Phase B).
+  if (!hasGenuineDisagreement(opening.claims)) {
+    return { claims: opening.claims, rounds, usage };
+  }
+
+  // One role's conversational turn in debate round `r`: revise against the full prior transcript
+  // and the challenges aimed at it. Mirrors runCommittee's per-role wiring (limiter, retries, cost,
+  // trace) but emits a DebateTurnOutput (claim + directed responses).
+  const runTurn = async (
+    role: AgentRoleT,
+    r: number,
+    priorRounds: DebateRound[],
+  ): Promise<{ claim: Claim; usage: AnnotatedUsage }> => {
+    const costTracker = getActiveCostTracker();
+    costTracker?.check();
+
+    const model = modelForDebateRound(role, r, loopIteration);
+    const priorTurn = priorRounds[priorRounds.length - 1].claims.find((c) => c.agentRole === role);
+    const messages = buildDebateMessages(role, question, evidenceBlock, priorRounds, priorTurn, loopIteration, objective);
+
+    const { output: object, usage: rawUsage } = await limiterForModel(model.modelId)(() =>
+      generateText({
+        model,
+        output: Output.object({ schema: DebateTurnOutputSchema }),
+        messages,
+        allowSystemInMessages: true,
+        maxRetries: LLM_MAX_RETRIES,
+        // See runRole's identical cap above — same rationale, same ceiling (a revised claim plus
+        // a handful of directed responses is still small relative to the model's 128k default).
+        maxOutputTokens: STRUCTURED_OUTPUT_MAX_TOKENS,
+      }),
+    );
+
+    const annotated = toAnnotatedUsage(rawUsage, model.modelId, `debate:${role}`);
+    costTracker?.record(annotated);
+
+    getActiveTrace()?.logLlmCall(`debate:${role}`, { model: model.modelId, loopIteration, debateRound: r, prompt: messages }, object, rawUsage);
+
+    const claim: Claim = {
+      ...object,
+      confidence: Math.max(0, Math.min(1, object.confidence)),
+      stance: coerceStance(object.stance),
+      missingEvidence: object.missingEvidence.slice(0, 3),
+      id: `${question.id}:${role}:${loopIteration}:d${r}`,
+      questionId: question.id,
+      agentRole: role,
+      loopIteration,
+      debateRound: r,
+      responses: object.responses,
+    };
+    return { claim, usage: annotated };
+  };
+
+  // Conversational rounds 1..MAX. Same stagger as round 0 (historian writes the cache, rest read),
+  // and stop the moment a round produces no movement.
+  for (let r = 1; r <= MAX_DEBATE_ROUNDS; r++) {
+    const priorRounds = [...rounds];
+    const historian = await runTurn("historian", r, priorRounds);
+    const rest = await Promise.all(
+      ROLES.filter((role) => role !== "historian").map((role) => runTurn(role, r, priorRounds)),
+    );
+    const turns = [historian, ...rest];
+    usage.push(...turns.map((t) => t.usage));
+
+    const thisRound: DebateRound = { round: r, claims: turns.map((t) => t.claim) };
+    const movement = debateMovement(rounds[rounds.length - 1], thisRound, DEBATE_CONFIDENCE_EPSILON);
+    getActiveTrace()?.log("debate:round", {
+      questionId: question.id,
+      round: r,
+      moved: movement.moved,
+      newRebuttals: movement.newRebuttals,
+      converged: movement.converged,
+    });
+    rounds.push(thisRound);
+    if (movement.converged) break;
+  }
+
+  // The final round's claims are the durable positions; the full transcript is ephemeral to this
+  // evidence snapshot.
+  return { claims: rounds[rounds.length - 1].claims, rounds, usage };
 }

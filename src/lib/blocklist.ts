@@ -1,5 +1,8 @@
 import { supabase } from "./supabase";
 import { domainOf } from "./format";
+import { warnOnce } from "./warn-once";
+
+const CACHE_DOWN = "[cache] supabase unreachable — running uncached, full Firecrawl price";
 
 const HARD_BLOCK_STATUSES = new Set([401, 403, 429, 451]);
 
@@ -13,9 +16,15 @@ export function blocklistKey(hostnameOrUrl: string): string {
 export async function loadBlocklist(): Promise<Set<string>> {
   if (cache) return cache;
 
-  const { data } = await supabase.from("blocklist").select("domain");
-  cache = new Set((data ?? []).map((row: { domain: string }) => blocklistKey(row.domain)));
-  return cache;
+  try {
+    const { data, error } = await supabase.from("blocklist").select("domain");
+    if (error) warnOnce("supabase", CACHE_DOWN);
+    cache = new Set((data ?? []).map((row: { domain: string }) => blocklistKey(row.domain)));
+    return cache;
+  } catch {
+    warnOnce("supabase", CACHE_DOWN);
+    return new Set();
+  }
 }
 
 export async function isBlocked(hostnameOrUrl: string): Promise<boolean> {
@@ -36,11 +45,16 @@ export async function recordBlock(hostnameOrUrl: string, reason: string, nowIso:
 
   if (cache) cache.add(key);
 
-  await supabase.from("blocklist").upsert({
-    domain: key,
-    reason,
-    added_at: nowIso,
-  });
+  try {
+    const { error } = await supabase.from("blocklist").upsert({
+      domain: key,
+      reason,
+      added_at: nowIso,
+    });
+    if (error) warnOnce("supabase", CACHE_DOWN);
+  } catch {
+    warnOnce("supabase", CACHE_DOWN);
+  }
 }
 
 export function _resetBlocklistCache(): void {

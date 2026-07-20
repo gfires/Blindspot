@@ -47,7 +47,8 @@ export function GateDecisionPanel({ decisions }: Props) {
                     ) : s.truncated ? (
                       <span className="text-amber">RESOLVED*</span>
                     ) : (
-                      <span className="text-mute">RESOLVED</span>
+                      // Light green, not grey: a genuine resolution is a success, not a non-event.
+                      <span className="text-success">RESOLVED</span>
                     )}
                   </td>
                   <td className="py-1 pr-2 nums">{s.gapCount}</td>

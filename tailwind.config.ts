@@ -17,6 +17,7 @@ const config: Config = {
         mute: "#5b6b80", // secondary / label text
         fg: "#c7d2e0", // primary text
         accent: "#2dd4bf", // electric teal — primary accent
+        success: "#4ade80", // light green — a genuinely resolved / settled-good state
         amber: "#f5a623", // warning / heat accent
         danger: "#ff5c73", // high-pain / risk accent
       },

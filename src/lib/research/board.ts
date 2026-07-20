@@ -71,21 +71,26 @@ export function scopeGateDecisionsToQuestion(
   }));
 }
 
-export type GateVerdict = "pending" | "settled" | "fault-line" | "limitation" | "retrieve";
+export type GateVerdict = "pending" | "settled" | "fault-line" | "limitation" | "retrieve" | "truncated";
 
 /**
- * The Gate cell's route verdict — derived from the REAL gate decision (`retrieve`) plus the
- * committee's stance, mirroring gate.ts's own three-way resolve reasoning (questionRoute/
- * routeReason) rather than collapsing every resolve into "settled":
+ * The Gate cell's route verdict — derived from the REAL gate decision (`retrieve`/`truncated`) plus
+ * the committee's stance, mirroring gate.ts's own resolve reasoning (questionRoute/routeReason)
+ * rather than collapsing every resolve into "settled":
  * - the gate sent it back to retrieval → "retrieve"
- * - resolved + `"contested"` → a reported fault line, not a confident answer
- * - resolved + `"insufficient"` → a LIMITATION (no chase-able gap, or diminishing returns already
- *   gave up on it) — the committee never reached a directional call, so this is not "settled" either
+ * - `truncated` → the question was still RESOLVED (committee stance + report entry) but had a
+ *   chase-able gap the run converged before pursuing (cost-headroom / budget clamp). It reads as
+ *   "answered · gap unchased" — answered on the evidence in hand, with the gap noted — NOT a settled
+ *   fault line and NOT a failure. Checked BEFORE stance so a budget-truncated `contested` question
+ *   shows "truncated", not "fault-line".
+ * - resolved + `"contested"` → a genuinely reported fault line (retrieval was futile), not a call
+ * - resolved + `"insufficient"` → a LIMITATION (no chase-able gap, or diminishing returns gave up)
  * - resolved + a unanimous decisive lean (`supports`/`opposes`) → "settled", the only confident case
  */
 export function gateVerdict(score: GateScore | undefined, stance: CommitteeStance): GateVerdict {
   if (!score) return "pending";
   if (score.retrieve) return "retrieve";
+  if (score.truncated) return "truncated";
   if (stance === "contested") return "fault-line";
   if (stance === "insufficient") return "limitation";
   return "settled";
@@ -97,11 +102,23 @@ export function gateVerdict(score: GateScore | undefined, stance: CommitteeStanc
  * loop's claim, not the spec's hero "openings agreed" case. That case is `debateOutcome ===
  * "debated"` with `debateRounds === 0` AND the committee has actually finished — while still
  * `status === "debating"` with 0 rounds, openings are simply still arriving.
+ *
+ * The "0 rounds, committee finished" case splits in two, and conflating them is misleading: a
+ * UNANIMOUS DECISIVE lean (supports/opposes) is genuinely settled — nothing to debate, agreement is
+ * the answer. A UNANIMOUS INSUFFICIENT (every role abstained) is NOT agreement on an answer — it's
+ * "we all agree we don't have enough evidence yet," which the gate routes back to retrieval when a
+ * gap is named (questionRoute, gate.ts), not a resolution. Pass `stance` (committeeStance over the
+ * question's current claims) so the label says which one actually happened — the Gate cell right
+ * next to it already shows what happens as a result (retrieve/limitation/settled).
  */
-export function deliberationLabel(q: Pick<QuestionStatus, "debateOutcome" | "debateRounds" | "status">): string {
+export function deliberationLabel(
+  q: Pick<QuestionStatus, "debateOutcome" | "debateRounds" | "status">,
+  stance?: CommitteeStance,
+): string {
   if (q.debateOutcome === "pending") return "—";
   if (q.debateOutcome === "skipped") return "↻ reused prior claim — no fresh evidence this loop";
   if (q.debateRounds > 0) return `🗣 debated ${q.debateRounds} round${q.debateRounds === 1 ? "" : "s"}`;
   if (q.status === "debating") return "🗣 opening...";
+  if (stance === "insufficient") return "○ unanimous insufficient — evidence gap, not agreement";
   return "⚡ skipped — unanimous, no genuine disagreement";
 }

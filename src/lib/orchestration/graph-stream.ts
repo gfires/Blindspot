@@ -129,6 +129,28 @@ async function runGraphStreamingInner(
   let degraded = false;
   let degradeMessage = "";
 
+  // Tier C — SINGLE-SOURCE cost emission. Every billed LLM call is recorded to the run's cost
+  // tracker at its call site (the authoritative ledger; see cost-tracker.ts). Rather than have each
+  // node's `case` remember to forward its `output.llmCalls` to `research:usage` — a step silently
+  // forgotten three separate times (intake, retrieve/researcher, decompose), each time dropping the
+  // live ticker and per-call table BELOW the true total — we DRAIN the tracker: emit one
+  // `research:usage` for every usage booked since the last drain. The display stream therefore
+  // cannot diverge from the ledger, and calls from a super-step that LangGraph rolled back (whose
+  // node `case` never fires) still surface on the final drain. `usageCursor` indexes
+  // tracker.getUsages(), which is append-only and ordered by record().
+  let usageCursor = 0;
+  const drainUsages = () => {
+    const tracker = getActiveCostTracker();
+    if (!tracker) return; // the streaming path always runs under runWithCostTracker; defensive only.
+    const booked = tracker.getUsages();
+    for (let i = usageCursor; i < booked.length; i++) {
+      const u = booked[i];
+      allLlmCalls.push(u);
+      send({ type: "research:usage", usage: u });
+    }
+    usageCursor = booked.length;
+  };
+
   // Always persist the trace — on success and on failure — with its own try/catch so a
   // write failure never masks the run error. A local helper (called on the normal path
   // and before a hard-fail rethrow) instead of a finally, to avoid wrapping the entire
@@ -197,14 +219,20 @@ async function runGraphStreamingInner(
         trace.logStateSnapshot(nodeName, output);
 
         switch (nodeName) {
+          case "intake": {
+            // intake's billed LLM call (topic -> ResearchBrief) reaches research:usage via the
+            // post-switch drainUsages() now — no per-node forwarding to forget (Tier C). This case
+            // has no non-cost events of its own, so it's intentionally empty.
+            break;
+          }
+
           case "decompose": {
             const questions = (output.questions ?? []) as Question[];
             currentQuestions = questions;
+            // decompose:done still carries its usage for display context; the cost itself reaches
+            // research:usage via drainUsages() (Tier C), and the reducer only bills research:usage,
+            // so this usage field never double-counts.
             const usage = output.llmCalls?.[0];
-            if (usage) {
-              allLlmCalls.push(usage);
-              send({ type: "research:usage", usage });
-            }
             send({
               type: "decompose:done",
               questions,
@@ -226,6 +254,10 @@ async function runGraphStreamingInner(
             // mirror state.budgetRemaining for the post-gate routing prediction.
             budgetRemaining += (output.budgetRemaining ?? 0) as number;
 
+            // The agentic arm's researcher agents are real, billed LLM calls; they reach
+            // research:usage via the post-switch drainUsages() (Tier C) rather than a per-node
+            // forward that could be — and historically was — forgotten. Draining from the tracker
+            // also catches spend a node never surfaces in output.llmCalls at all (e.g. triage).
             for (const ev of evidence) {
               // Prefer the real question id (agentic arm tags every Evidence with it — see
               // researcher.ts) over sourceQuery, mirroring scopeEvidenceToQuestions's own identity-
@@ -262,7 +294,6 @@ async function runGraphStreamingInner(
             const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
             const digests = (output.digests ?? {}) as Record<string, DigestItem[]>;
             const transcripts = (output.debateTranscripts ?? {}) as Record<string, DebateRound[]>;
-            allLlmCalls.push(...usages);
             allClaims.push(...claims);
 
             // Openings + rounds first (§3c) — the debate node's output only carries THIS loop's
@@ -275,9 +306,11 @@ async function runGraphStreamingInner(
               send({ type: "debate:claim", claim });
             }
 
+            // The debate:digest cell event still comes from this node's output (it needs the digest's
+            // evidenceCount) — its `usage` field is display context only and is NOT billed by the
+            // reducer. The dollar cost of every debate/digest call reaches research:usage via the
+            // post-switch drainUsages() (Tier C), so there's no per-node forward here to fall out of sync.
             for (const u of usages) {
-              // Digest calls are tagged `digest:<questionId>` (see digest.ts) — surface
-              // them as their own event before folding into the usage totals.
               if (u.label.startsWith("digest:")) {
                 const questionId = u.label.slice("digest:".length);
                 send({
@@ -288,7 +321,6 @@ async function runGraphStreamingInner(
                   usage: u,
                 });
               }
-              send({ type: "research:usage", usage: u });
             }
 
             send({ type: "debate:done", loopIteration: currentLoopIteration, claimCount: claims.length });
@@ -301,14 +333,10 @@ async function runGraphStreamingInner(
             const loopIteration = (output.loopIteration ?? currentLoopIteration) as number;
             const converged = (output.converged ?? false) as boolean;
             const questions = (output.questions ?? []) as Question[];
-            const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
             const gateScores = (output.gateScores ?? []) as GateScore[];
-            allLlmCalls.push(...usages);
+            // The gate's own classifier call (when it runs) reaches research:usage via
+            // drainUsages() after the switch (Tier C) — no per-node forward here.
             if (questions.length > 0) currentQuestions = questions;
-
-            for (const u of usages) {
-              send({ type: "research:usage", usage: u });
-            }
 
             const resolvedQuestionIds = questions.filter(q => q.resolved).map(q => q.id);
             const unresolvedQuestionIds = questions.filter(q => !q.resolved).map(q => q.id);
@@ -321,6 +349,10 @@ async function runGraphStreamingInner(
               unresolvedQuestionIds,
               continueLoop,
               gateScores,
+              // Why the loop ended, when it did (cost-headroom / no-progress / max-loops / budget /
+              // gate-decided-no-retrieve / zero-cost-resolved). Rides the persisted event so the
+              // replay can state the reason instead of showing an unexplained halt. null while looping.
+              convergedReason: (output.convergedReason ?? null) as string | null,
             });
 
             // Next node mirrors routeAfterGate: retrieve when the gate wants another
@@ -335,14 +367,17 @@ async function runGraphStreamingInner(
           }
 
           case "recommend": {
-            // The recommend node's answerObjective step (A5) is one LLM call; fold its usage
-            // into the running total so the streamed token rollup stays complete.
-            const usages = (output.llmCalls ?? []) as AnnotatedUsage[];
-            allLlmCalls.push(...usages);
-            for (const u of usages) send({ type: "research:usage", usage: u });
+            // The recommend node's answerObjective step (A5) is one billed LLM call; its cost
+            // reaches research:usage via drainUsages() after the switch (Tier C).
             break;
           }
         }
+
+        // Tier C drain — after each node's specialized events, emit research:usage for every call
+        // the tracker booked during (and, for calls a node never surfaced in output.llmCalls, even
+        // outside) that node. One drain point instead of six per-node forwards keeps the display
+        // stream identical to the authoritative ledger by construction.
+        drainUsages();
       }
     }
   } catch (err) {
@@ -382,17 +417,16 @@ async function runGraphStreamingInner(
   const finalState = fullState.values as ResearchStateT;
 
   // Always produce an objective-level answer, even when the run degraded before recommend ran (the
-  // answer is exempt from the cost cap). No-op when recommend already wrote it; otherwise fold the
-  // out-of-graph answer call's usage into the streamed rollup.
-  const { report, usage: answerUsage } = await ensureAnswer(finalState, synthesizeReport(finalState));
-  for (const u of answerUsage) {
-    allLlmCalls.push(u);
-    send({ type: "research:usage", usage: u });
-  }
+  // answer is exempt from the cost cap). No-op when recommend already wrote it (answerObjective books
+  // its cost to the tracker either way).
+  const { report } = await ensureAnswer(finalState, synthesizeReport(finalState));
+  // FINAL drain — emits every tracker call not yet streamed: the out-of-graph answer above, and,
+  // crucially, any call from a super-step LangGraph rolled back on a degraded run (whose node `case`
+  // never fired). After this, Σ(research:usage) === tracker.getUsages() total, live and in replay.
+  drainUsages();
   if (degraded) {
     send({ type: "research:error", message: degradeMessage });
   }
-  send({ type: "recommend:done", report });
 
   trace.log("final_state", {
     topic,
@@ -420,7 +454,6 @@ async function runGraphStreamingInner(
   const rollupUsages = tracker ? tracker.getUsages() : allLlmCalls;
   const tokens = rollupTokens(rollupUsages);
   const mechanics = computeRunMechanics(trace.getEntries(), finalState, tokens);
-  send({ type: "research:mechanics", mechanics });
   const result = {
     arm: "orchestrated" as const,
     topic,
@@ -432,7 +465,15 @@ async function runGraphStreamingInner(
     mechanics,
   };
 
-  await writeTrace();
+  // recommend:done/research:mechanics are built and folded into allEvents/trace here, but NOT sent
+  // to the live client yet — saveRun() below persists them (and everything before them) first. The
+  // UI auto-opens the report popup the instant recommend:done reaches it, so the run must already
+  // be a durable row in research_runs before that client-visible event fires, not racing it.
+  const recommendDoneEvent: ResearchEvent = { type: "recommend:done", report };
+  const mechanicsEvent: ResearchEvent = { type: "research:mechanics", mechanics };
+  trace.logEvent(recommendDoneEvent);
+  trace.logEvent(mechanicsEvent);
+  allEvents.push(recommendDoneEvent, mechanicsEvent);
 
   await saveRun({
     topic,
@@ -445,6 +486,15 @@ async function runGraphStreamingInner(
     events: allEvents,
     mechanics,
   });
+
+  originalSend(recommendDoneEvent);
+  originalSend(mechanicsEvent);
+
+  // Written LAST, after every trace.logEvent call above — writing earlier (as a prior version of
+  // this function did) silently dropped recommend:done/research:mechanics from the persisted
+  // trace-output/*.trace.json file (the live client and Supabase's research_runs.events were still
+  // correct, since those read from `allEvents`/`originalSend` directly, not from disk).
+  await writeTrace();
 
   return result;
 }

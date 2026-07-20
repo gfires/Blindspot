@@ -46,6 +46,21 @@ const GATE_VERDICT_STYLE: Record<GateVerdict, { label: string; cls: string }> = 
   "fault-line": { label: "⚡ fault line", cls: "text-amber" },
   limitation: { label: "⚠ limitation", cls: "text-mute" },
   retrieve: { label: "↻ retrieve +gap", cls: "text-amber" },
+  // Answered — but the run converged before chasing a gap this question had flagged. It WAS resolved
+  // (committee stance + report entry), just on the evidence in hand; the gap is noted, not fatal. So
+  // "answered · gap unchased", amber (a caveat), NOT danger (which read as a failed/cut-off question).
+  truncated: { label: "⌛ answered · gap unchased", cls: "text-amber" },
+};
+
+// Human phrasing for the gate's convergence reason (why the whole loop stopped) — shown once,
+// above the board, so a run that halted on budget/loops doesn't read as if every question settled.
+const CONVERGED_REASON_LABEL: Record<string, string> = {
+  "cost-headroom": "LLM cost cap — stopped before a loop it couldn't afford to finish",
+  budget: "retrieval budget exhausted",
+  "max-loops": "hit the max retrieval-loop limit",
+  "no-progress": "a retrieval loop added no new evidence",
+  "gate-decided-no-retrieve": "the gate judged more retrieval wouldn't help",
+  "zero-cost-resolved": "every question resolved without needing another loop",
 };
 
 const COLUMNS = "minmax(180px,1fr) repeat(5, minmax(120px,1fr))";
@@ -56,7 +71,13 @@ interface DrillDown {
   stage: Stage;
 }
 
-function useElapsed(running: boolean, resetKey: string): number {
+// `live` gates the ticking interval — replay's `state.running` mirrors whatever the replayed
+// reducer computed (true until recommend:done/research:error is reached), which has nothing to do
+// with wall-clock time. Without this guard, scrubbing/playing a replay ran a REAL setInterval
+// counting up in actual elapsed seconds since the component mounted — meaningless during replay,
+// and disconnected from playback position or the original run's real duration (events carry no
+// timestamps to reconstruct that from). Replay's own scrub bar already shows position.
+function useElapsed(running: boolean, resetKey: string, live: boolean): number {
   const [elapsed, setElapsed] = useState(0);
   const t0 = useRef(Date.now());
 
@@ -66,10 +87,10 @@ function useElapsed(running: boolean, resetKey: string): number {
   }, [resetKey]);
 
   useEffect(() => {
-    if (!running) return;
+    if (!running || !live) return;
     const id = setInterval(() => setElapsed(Date.now() - t0.current), 100);
     return () => clearInterval(id);
-  }, [running]);
+  }, [running, live]);
 
   return elapsed;
 }
@@ -163,9 +184,13 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
         </div>
       </div>
 
-      {/* Recon */}
+      {/* Recon — "recon" is loop-0's initial reconnaissance pass specifically (reconCount filters
+          evidence.loopIteration === 0); "total" is everything gathered since, including later
+          targeted retrieval loops. Labeled explicitly (not "src"/"total") because once a second
+          loop adds evidence the two numbers diverge, and an unexplained pair reads as two
+          inconsistent measures of the same thing rather than two different things. */}
       <Cell active={isDrilled("recon")} onClick={() => onToggle(qid, "recon")}>
-        <div className="nums text-fg">{reconCount(evidence)} src</div>
+        <div className="nums text-fg">{reconCount(evidence)} recon</div>
         <div className="text-mute">{evidence.length} total</div>
       </Cell>
 
@@ -177,7 +202,7 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
       {/* Deliberation */}
       <Cell active={isDrilled("deliberation")} onClick={() => onToggle(qid, "deliberation")}>
         <span className={q.debateOutcome === "debated" ? "text-accent" : "text-mute"}>
-          {deliberationLabel(q)}
+          {deliberationLabel(q, stance)}
         </span>
       </Cell>
 
@@ -189,9 +214,20 @@ function QuestionRow({ q, state, drill, onToggle }: RowProps) {
 
       {/* Loop */}
       <Cell active={isDrilled("loop")} onClick={() => onToggle(qid, "loop")}>
-        {q.status === "looping" || q.currentLoop > 0 ? (
+        {q.status === "looping" ? (
+          // Actively mid-loop right now — present tense, amber (matches the row's own
+          // "looping"/"retrieving" status styling).
           <>
             <span className="text-amber">↻ retrieve loop {q.currentLoop}</span>
+            <WindowShopStrip passes={state.researcherByQuestion[qid] ?? []} variant="cell" />
+          </>
+        ) : q.currentLoop > 0 ? (
+          // The run has since ended (status normalizes to "resolved" on recommend:done) but this
+          // question DID go through extra retrieval — currentLoop never resets, so say so in the
+          // past tense instead of reusing the active "retrieve loop N" wording, which reads as
+          // still-in-progress and contradicts a "converged"/finished run.
+          <>
+            <span className="text-mute">loop {q.currentLoop} · done</span>
             <WindowShopStrip passes={state.researcherByQuestion[qid] ?? []} variant="cell" />
           </>
         ) : (
@@ -306,6 +342,11 @@ interface Props {
    * "Exploration trace" recap) — fixed positioning there would cover the report it's nested in.
    */
   fullscreen?: boolean;
+  /**
+   * Whether this is a real-time run (drives the wall-clock elapsed timer) vs. a replay (position
+   * is whatever the scrub bar says, not real elapsed seconds). Default true; /replay passes false.
+   */
+  live?: boolean;
 }
 
 /**
@@ -315,12 +356,21 @@ interface Props {
  * question's drill-down slides up as an overlay sheet instead of pushing page height — the whole
  * picture always fits the viewport, no matter how many questions or how deep a drill-down gets.
  */
-export function QuestionBoard({ state, done = false, headerExtra, topBar, fullscreen = true }: Props) {
-  const elapsed = useElapsed(state.running, state.topic);
+export function QuestionBoard({ state, done = false, headerExtra, topBar, fullscreen = true, live = true }: Props) {
+  const elapsed = useElapsed(state.running, state.topic, live);
   const [drill, setDrill] = useState<DrillDown | null>(null);
+  const [topicExpanded, setTopicExpanded] = useState(false);
 
   const lastGate = state.gateDecisions[state.gateDecisions.length - 1];
   const continueLoop = lastGate?.continueLoop ?? false;
+  // Why the run stopped — shown once the loop has converged (not while still looping). Falls back to
+  // the raw reason code if it's one we haven't given friendly wording. Any question flagged
+  // `truncated` means the stop cut an investigation short (budget/loops), which we call out.
+  const stopReason = !continueLoop && lastGate?.convergedReason ? lastGate.convergedReason : null;
+  // Scan EVERY loop's scores, not just the last gate's: a question truncated in an earlier loop is
+  // resolved out of later gates, so `lastGate` alone would miss it and the banner would read "clean
+  // convergence" while that question's own cell (which scans all decisions) shows "truncated · gap".
+  const anyTruncated = state.gateDecisions.some((d) => d.gateScores.some((s) => s.truncated));
 
   const toggle = (questionId: string, stage: Stage) => {
     setDrill((prev) => (prev && prev.questionId === questionId && prev.stage === stage ? null : { questionId, stage }));
@@ -339,20 +389,50 @@ export function QuestionBoard({ state, done = false, headerExtra, topBar, fullsc
       {topBar}
 
       {/* Header */}
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <div className="min-w-0">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0 shrink">
           <div className="eyebrow">Deep Research</div>
-          <h2 className="truncate text-lg font-semibold text-fg">{state.topic}</h2>
+          <button
+            onClick={() => setTopicExpanded(true)}
+            className="line-clamp-2 text-left text-sm font-semibold leading-snug text-fg transition hover:text-accent"
+            title="click for full topic"
+          >
+            {state.topic}
+          </button>
         </div>
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex shrink-0 flex-wrap items-center gap-3">
           {headerExtra}
           <CostCounter usage={state.usage} />
-          <span className="nums text-sm text-mute">
-            {fmtMs(elapsed)}
-            {state.running && <span className="animate-blink">█</span>}
-          </span>
+          {live && (
+            <span className="nums text-sm text-mute">
+              {fmtMs(elapsed)}
+              {state.running && <span className="animate-blink">█</span>}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Why the run stopped — one line, so a budget/loop truncation never masquerades as
+          "every question settled". Amber caveat when a question's gap went unchased, mute otherwise. */}
+      {stopReason && (
+        <div
+          className={`shrink-0 rounded border px-2.5 py-1.5 text-[11px] ${
+            anyTruncated ? "border-amber/40 bg-amber/5 text-amber" : "border-line bg-panel2 text-mute"
+          }`}
+        >
+          <span className="font-mono uppercase tracking-wide">
+            {anyTruncated ? "⌛ answered · gap unchased" : "✔ run converged"}
+          </span>
+          <span className="mx-1.5 text-line">·</span>
+          {CONVERGED_REASON_LABEL[stopReason] ?? stopReason}
+          {anyTruncated && (
+            <span className="text-mute">
+              {" "}— every question was still answered from the evidence gathered; some had a flagged
+              gap the run stopped before chasing
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Pipeline state machine + live ticker — the "what's happening" band */}
       <div className="grid h-24 shrink-0 grid-cols-1 gap-3 sm:h-28 lg:grid-cols-[2fr_1fr]">
@@ -402,6 +482,27 @@ export function QuestionBoard({ state, done = false, headerExtra, topBar, fullsc
           onClose={() => setDrill(null)}
           onSelectQuestion={(qid) => setDrill({ questionId: qid, stage: "deliberation" })}
         />
+      )}
+
+      {topicExpanded && (
+        <div
+          className="fixed inset-0 z-30 flex items-end justify-center bg-ink/70 backdrop-blur-sm"
+          onClick={() => setTopicExpanded(false)}
+        >
+          <div
+            className="max-h-[70vh] w-full max-w-6xl animate-rise overflow-y-auto rounded-t-xl border border-line
+                       border-b-0 bg-panel p-4 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="eyebrow">topic</div>
+              <button onClick={() => setTopicExpanded(false)} className="text-xs text-mute hover:text-fg">
+                close ✕
+              </button>
+            </div>
+            <p className="text-base leading-relaxed text-fg">{state.topic}</p>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -4,7 +4,7 @@ import { generateText } from "ai";
 import { gateShortCircuit, allocateBudget, questionRoute } from "@/lib/orchestration/gate";
 import { routeAfterGate } from "@/lib/orchestration/graph";
 import type { Contention } from "@/lib/orchestration/debate";
-import { MAX_LOOP_ITERATIONS, MIN_LOOP_COST_HEADROOM_USD } from "@/lib/params";
+import { MAX_LOOP_ITERATIONS, LOOP_COST_PER_QUESTION_USD } from "@/lib/params";
 import { runWithCostTracker, getActiveCostTracker } from "@/lib/orchestration/cost-tracker";
 import type { AnnotatedUsage } from "@/lib/orchestration/eval";
 import type { ResearchStateT, Question } from "@/lib/schemas/state";
@@ -58,6 +58,7 @@ function stateOf(over: Partial<ResearchStateT>): ResearchStateT {
     searchCredits: 0,
     scrapeCredits: 0,
     converged: false,
+    convergedReason: null,
     llmCalls: [],
     searchedQueries: [],
     gateScores: [],
@@ -92,14 +93,15 @@ describe("gateShortCircuit", () => {
   });
 
   // A state that would otherwise CONTINUE: Firecrawl budget remains, under the loop cap, and the
-  // last loop added evidence. Only the cost-headroom guard should stop it.
+  // last loop added evidence. Only the cost-headroom guard should stop it. One unresolved question
+  // (the default from stateOf/q("q1")) → required headroom is exactly LOOP_COST_PER_QUESTION_USD.
   const continuableState = stateOf({ loopIteration: 1, newEvidenceCount: 4, budgetRemaining: 50 });
 
-  it("returns 'cost-headroom' when remaining LLM headroom is below the minimum", async () => {
+  it("returns 'cost-headroom' when remaining LLM headroom is below one question's cost", async () => {
     await runWithCostTracker(async () => {
-      // Spend down to $0.10 remaining under a $1.00 cap — below the headroom floor.
-      getActiveCostTracker()!.record(spendUsage(0.9));
-      expect(getActiveCostTracker()!.getRemaining()).toBeLessThan(MIN_LOOP_COST_HEADROOM_USD);
+      // Spend down to $0.07 remaining under a $1.00 cap — below the one-question headroom floor.
+      getActiveCostTracker()!.record(spendUsage(1 - 0.07));
+      expect(getActiveCostTracker()!.getRemaining()).toBeLessThan(LOOP_COST_PER_QUESTION_USD);
       expect(gateShortCircuit(continuableState)).toBe("cost-headroom");
     }, 1.0);
   });
@@ -107,7 +109,7 @@ describe("gateShortCircuit", () => {
   it("does NOT fire cost-headroom when ample LLM headroom remains", async () => {
     await runWithCostTracker(async () => {
       getActiveCostTracker()!.record(spendUsage(0.1)); // $0.90 remaining under a $1.00 cap
-      expect(getActiveCostTracker()!.getRemaining()).toBeGreaterThan(MIN_LOOP_COST_HEADROOM_USD);
+      expect(getActiveCostTracker()!.getRemaining()).toBeGreaterThan(LOOP_COST_PER_QUESTION_USD);
       expect(gateShortCircuit(continuableState)).toBeNull();
     }, 1.0);
   });
@@ -122,6 +124,24 @@ describe("gateShortCircuit", () => {
     await runWithCostTracker(async () => {
       getActiveCostTracker()!.record(spendUsage(0.9)); // low headroom
       expect(gateShortCircuit(stateOf({ budgetRemaining: 0, loopIteration: 1, newEvidenceCount: 4 }))).toBe("budget");
+    }, 1.0);
+  });
+
+  // The whole point of scaling by unresolved-question count: the SAME remaining headroom is
+  // affordable for one still-open question but not for four — a flat threshold can't express this.
+  it("required headroom scales with how many questions are still unresolved", async () => {
+    const fourUnresolvedQuestions = stateOf({
+      loopIteration: 1,
+      newEvidenceCount: 4,
+      budgetRemaining: 50,
+      questions: [q("q1"), q("q2"), q("q3"), q("q4")],
+    });
+    await runWithCostTracker(async () => {
+      // $0.20 remaining: enough for one question (0.08) but not four (0.32).
+      getActiveCostTracker()!.record(spendUsage(0.8));
+      expect(getActiveCostTracker()!.getRemaining()).toBeCloseTo(0.2, 5);
+      expect(gateShortCircuit(continuableState)).toBeNull(); // 1 unresolved question — affordable
+      expect(gateShortCircuit(fourUnresolvedQuestions)).toBe("cost-headroom"); // 4 — not affordable
     }, 1.0);
   });
 });
@@ -145,7 +165,7 @@ describe("allocateBudget — short-circuit before any LLM call", () => {
     (generateText as Mock).mockResolvedValue(fakeGenResult({ decisions: [] }));
 
     await runWithCostTracker(async () => {
-      getActiveCostTracker()!.record(spendUsage(0.9)); // remaining $0.10 < headroom floor
+      getActiveCostTracker()!.record(spendUsage(0.93)); // remaining $0.07 < one-question headroom floor
       // State would otherwise continue: Firecrawl budget remains, under the loop cap, evidence added.
       const result = await allocateBudget(
         stateOf({ loopIteration: 1, newEvidenceCount: 4, budgetRemaining: 50 }),
@@ -155,6 +175,53 @@ describe("allocateBudget — short-circuit before any LLM call", () => {
       expect(result.state.converged).toBe(true);
       // routeAfterGate reads `converged` — the new reason sets it, so the run heads to recommend.
       expect(routeAfterGate(result.state)).toBe("recommend");
+      assertNoLlmCalls();
+    }, 1.0);
+  });
+
+  // The actual fix: converging on cost-headroom must NOT throw away the (zero-LLM-cost) stance
+  // classification — the UI's Gate cell needs a real verdict, not a blank dash, for a question
+  // that was genuinely contested with an evidential gap we simply couldn't afford to chase.
+  it("a cost-headroom short-circuit still classifies contested questions into gateScores, retrieve always false", async () => {
+    const { generateText } = await import("ai");
+    (generateText as Mock).mockResolvedValue(fakeGenResult({ decisions: [] }));
+
+    // supports vs opposes (contested), an unresolved rebuttal, WITH a named gap → evidential →
+    // would route "retrieve" if there were budget for it.
+    const finalRound: DebateRound = {
+      round: 1,
+      claims: [
+        claim("historian", "supports", {
+          debateRound: 1,
+          missingEvidence: ["adoption numbers"],
+          responses: [resp("skeptic", "rebut")],
+        }),
+        claim("skeptic", "opposes", { debateRound: 1, responses: [] }),
+      ],
+    };
+
+    await runWithCostTracker(async () => {
+      getActiveCostTracker()!.record(spendUsage(0.93)); // remaining $0.07 < one-question headroom floor
+      const result = await allocateBudget(
+        stateOf({
+          loopIteration: 1,
+          newEvidenceCount: 4,
+          budgetRemaining: 50,
+          claims: finalRound.claims,
+          debateTranscripts: { q1: [round0(finalRound.claims), finalRound] },
+        }),
+      );
+
+      expect(result.continueLoop).toBe(false);
+      const score = result.gateScores.find((s) => s.questionId === "q1");
+      expect(score).toBeDefined();
+      expect(score?.retrieve).toBe(false); // never actually retrieve on a short-circuit exit
+      expect(score?.reason).toMatch(/would retrieve/i);
+      expect(score?.reason).toMatch(/cost-headroom/i);
+      // The question wanted a loop it didn't get — flagged truncated so the board shows an unfinished
+      // chase, not a settled fault line. And the run carries WHY it stopped.
+      expect(score?.truncated).toBe(true);
+      expect(result.convergedReason).toBe("cost-headroom");
       assertNoLlmCalls();
     }, 1.0);
   });

@@ -1,8 +1,8 @@
 import { generateText, Output } from "ai";
 import { z } from "zod";
 import { gateClassifierModel } from "../models/provider";
-import type { ResearchStateT } from "../schemas/state";
-import { MAX_LOOP_ITERATIONS, LLM_MAX_RETRIES, LOOP_CONFIDENCE_EPSILON, MIN_LOOP_COST_HEADROOM_USD } from "../params";
+import type { ResearchStateT, Question } from "../schemas/state";
+import { MAX_LOOP_ITERATIONS, LLM_MAX_RETRIES, LOOP_CONFIDENCE_EPSILON, LOOP_COST_PER_QUESTION_USD } from "../params";
 import { toAnnotatedUsage, type AnnotatedUsage } from "./eval";
 import type { GateScore } from "../research-events";
 import { getActiveTrace } from "./trace";
@@ -28,8 +28,11 @@ const GateDecisionSchema = z.object({
  * - "cost-headroom": too little LLM-cost headroom left under MAX_RUN_COST_USD to safely START
  *   another retrieve+debate cycle. Beginning one anyway risks hitting the cap MID-debate, which
  *   LangGraph rolls back — orphaning the just-gathered evidence and committing zero claims. Stop
- *   cleanly before the cycle and keep the last COMPLETE loop's claims. Fires only when a cost
- *   tracker is active; "no tracker" is treated as infinite headroom (keeps the pure tests inert).
+ *   cleanly before the cycle and keep the last COMPLETE loop's claims. Required headroom scales
+ *   with how many questions are still unresolved (LOOP_COST_PER_QUESTION_USD × count) — a cycle
+ *   that only needs to redebate one question is far cheaper than one redebating four, so a single
+ *   flat threshold either starves the cheap case or underestimates the expensive one. Fires only
+ *   when a cost tracker is active; "no tracker" is treated as infinite headroom (pure tests inert).
  * - "max-loops": the loop-iteration cap is reached.
  * - "no-progress": a past-loop-0 iteration whose retrieve added no new evidence — running
  *   the committee and gate again would only reproduce the prior round. Loop 0 is exempt
@@ -44,7 +47,11 @@ export function gateShortCircuit(
   // Affordability guard: converge rather than start a cycle the LLM budget can't finish. When no
   // tracker is active, remaining is undefined → treated as infinite headroom → guard stays inert.
   const remaining = getActiveCostTracker()?.getRemaining();
-  if (remaining !== undefined && remaining < MIN_LOOP_COST_HEADROOM_USD) return "cost-headroom";
+  if (remaining !== undefined) {
+    const unresolvedCount = state.questions.filter((q) => !q.resolved).length;
+    const requiredHeadroom = LOOP_COST_PER_QUESTION_USD * Math.max(1, unresolvedCount);
+    if (remaining < requiredHeadroom) return "cost-headroom";
+  }
   if (state.loopIteration >= MAX_LOOP_ITERATIONS) return "max-loops";
   if (state.loopIteration > 0 && state.newEvidenceCount === 0) return "no-progress";
   return null;
@@ -123,20 +130,74 @@ function routeReason(stance: CommitteeStance, contentions: Contention[]): string
   return `committee reached a unanimous ${stance} — settled`;
 }
 
+interface QuestionSignal {
+  stance: CommitteeStance;
+  contentions: Contention[];
+  hasNamedGap: boolean;
+  gapCount: number;
+  route: "retrieve" | "resolve";
+}
+
+/**
+ * Zero-LLM-cost classification of one question's committee position from its final debate round —
+ * shared by the short-circuit exit below and the main stance-routing pass, so both read the exact
+ * same signal. `null` when there's no debate transcript yet (defers to the LLM gate in the normal
+ * path; nothing to classify on a short-circuit exit either).
+ */
+function classifyQuestion(state: ResearchStateT, q: Question): QuestionSignal | null {
+  const rounds = state.debateTranscripts[q.id];
+  const finalRound = rounds?.[rounds.length - 1];
+  if (!finalRound) return null;
+  const claims = finalRound.claims;
+  const contentions = extractContentions(q.id, claims);
+  const stance = committeeStance(claims);
+  const hasNamedGap = claims.some((c) => c.missingEvidence.length > 0);
+  const gapCount = claims.reduce((s, c) => s + c.missingEvidence.length, 0);
+  return { stance, contentions, hasNamedGap, gapCount, route: questionRoute({ stance, contentions, hasNamedGap }) };
+}
+
 export async function allocateBudget(
   state: ResearchStateT
-): Promise<{ state: ResearchStateT; continueLoop: boolean; usage: AnnotatedUsage[]; gateScores: GateScore[] }> {
+): Promise<{ state: ResearchStateT; continueLoop: boolean; usage: AnnotatedUsage[]; gateScores: GateScore[]; convergedReason: string | null }> {
   // Zero-cost convergence checks first — budget, loop cap, zero-progress loop — so a
   // converged run never pays for a gate classification call.
   const shortCircuit = gateShortCircuit(state);
   if (shortCircuit) {
+    // We're converging WITHOUT retrieving, but the stance/contention classification itself costs
+    // zero LLM calls — run it anyway so the UI's Gate cell shows a real verdict (fault-line/
+    // limitation/settled) instead of a blank dash, and so the trace/report can tell apart "genuinely
+    // interpretive, retrieval wouldn't have helped" from "named an evidential gap, we just couldn't
+    // afford to chase it this run." `retrieve` always stays false here regardless of route — we are
+    // not starting another cycle no matter what a question's classification says.
+    const gateScores: GateScore[] = [];
+    for (const q of state.questions.filter((qq) => !qq.resolved)) {
+      const signal = classifyQuestion(state, q);
+      if (!signal) continue;
+      const { stance, contentions, gapCount, route } = signal;
+      gateScores.push({
+        questionId: q.id,
+        retrieve: false,
+        gapCount,
+        confidenceSpread: 0,
+        // route === "retrieve" here means the question had a chase-able gap and WOULD have looped —
+        // the convergence truncated it. Flag it so the board shows "truncated · gap", not a settled
+        // fault line (whose reason genuinely is "retrieving is futile").
+        truncated: route === "retrieve",
+        reason:
+          route === "retrieve"
+            ? `${stance === "contested" ? "evidential contention" : "named evidence gap"} — would retrieve, but converged (${shortCircuit})`
+            : routeReason(stance, contentions),
+      });
+    }
+
     getActiveTrace()?.log("gate:converged", {
       reason: shortCircuit,
       loopIteration: state.loopIteration,
       budgetRemaining: state.budgetRemaining,
       newEvidenceCount: state.newEvidenceCount,
+      gateScores,
     });
-    return { state: { ...state, converged: true }, continueLoop: false, usage: [], gateScores: [] };
+    return { state: { ...state, converged: true }, continueLoop: false, usage: [], gateScores, convergedReason: shortCircuit };
   }
 
   const unresolved = state.questions.filter(q => !q.resolved);
@@ -188,20 +249,16 @@ export async function allocateBudget(
   const stanceByQuestion = new Map<string, CommitteeStance>();
   const stanceResolved: GateScore[] = [];
   for (const q of unresolved.filter(q => !diminishingIds.has(q.id))) {
-    const rounds = state.debateTranscripts[q.id];
-    const finalRound = rounds?.[rounds.length - 1];
-    if (!finalRound) continue; // no debate transcript → defer to the LLM gate (route null)
-    const claims = finalRound.claims;
-    const contentions = extractContentions(q.id, claims);
-    const stance = committeeStance(claims);
-    const hasNamedGap = claims.some(c => c.missingEvidence.length > 0);
+    const signal = classifyQuestion(state, q);
+    if (!signal) continue; // no debate transcript → defer to the LLM gate (route null)
+    const { stance, contentions, gapCount, route } = signal;
     contentionsByQuestion.set(q.id, contentions);
     stanceByQuestion.set(q.id, stance);
-    if (questionRoute({ stance, contentions, hasNamedGap }) === "resolve") {
+    if (route === "resolve") {
       stanceResolved.push({
         questionId: q.id,
         retrieve: false,
-        gapCount: claims.reduce((s, c) => s + c.missingEvidence.length, 0),
+        gapCount,
         confidenceSpread: 0,
         reason: routeReason(stance, contentions),
       });
@@ -239,6 +296,7 @@ export async function allocateBudget(
       continueLoop: false,
       usage: [],
       gateScores: zeroCostResolved,
+      convergedReason: "zero-cost-resolved",
     };
   }
 
@@ -315,7 +373,8 @@ export async function allocateBudget(
     const keepIds = new Set(sorted.slice(0, state.budgetRemaining).map(s => s.questionId));
     gateScores = gateScores.map(s =>
       s.retrieve && !keepIds.has(s.questionId)
-        ? { ...s, retrieve: false, reason: "clamped — budget insufficient" }
+        // Wanted to retrieve but budget couldn't cover it — a truncation, same as a short-circuit.
+        ? { ...s, retrieve: false, truncated: true, reason: "clamped — budget insufficient" }
         : s
     );
   }
@@ -332,7 +391,7 @@ export async function allocateBudget(
       loopIteration: state.loopIteration,
       budgetRemaining: state.budgetRemaining,
     });
-    return { state: { ...state, converged: true }, continueLoop: false, usage: callUsage, gateScores };
+    return { state: { ...state, converged: true }, continueLoop: false, usage: callUsage, gateScores, convergedReason: "gate-decided-no-retrieve" };
   }
 
   const questions = state.questions.map(q => {
@@ -345,5 +404,6 @@ export async function allocateBudget(
     continueLoop: true,
     usage: callUsage,
     gateScores,
+    convergedReason: null, // still looping — no terminal reason yet
   };
 }

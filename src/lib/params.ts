@@ -44,15 +44,25 @@ export const TOTAL_RETRIEVAL_BUDGET = 80;
 // slightly above this: ~this much deliberation + the exempt answer on top.
 export const MAX_RUN_COST_USD      = 0.75;
 
-// LLM-cost headroom required to justify STARTING another retrieve+debate cycle. A cycle that
-// begins with less than this remaining under MAX_RUN_COST_USD risks blowing the cap MID-flight —
-// and because LangGraph rolls a super-step back when a call throws mid-step, a mid-debate cap hit
-// produces ZERO committed claims and ORPHANS the evidence that pass just gathered. So the gate
-// converges cleanly BEFORE such a cycle, keeping the last COMPLETE loop's claims for the answer.
-// Sized to cover roughly one bounded deliberation cycle: post the per-pass evidence ceiling, a
-// retrieve+redebate cycle runs ~$0.15–0.25. Tunable; keep it a small fraction of MAX_RUN_COST_USD
-// (here 1/3) so early loops aren't starved while a late, unaffordable loop is still stopped short.
-export const MIN_LOOP_COST_HEADROOM_USD = 0.25;
+// LLM-cost headroom required, PER STILL-UNRESOLVED QUESTION, to justify STARTING another
+// retrieve+debate cycle. A cycle that begins with less than (this × unresolved count) remaining
+// under MAX_RUN_COST_USD risks blowing the cap MID-flight — and because LangGraph rolls a
+// super-step back when a call throws mid-step, a mid-debate cap hit produces ZERO committed claims
+// and ORPHANS the evidence that pass just gathered. So the gate converges cleanly BEFORE such a
+// cycle, keeping the last COMPLETE loop's claims for the answer.
+//
+// Scaled per-question rather than a single flat cap: a flat threshold either starves early loops
+// (sized to cover every unresolved question redebating at once) or, worse, underestimates a loop
+// that still has SEVERAL questions contested — a flat $0.25 was already close to the true cost of
+// a real 4-question, fully-contested run (see below), so cutting it to a smaller flat number would
+// have let that exact run start a second loop it couldn't finish.
+//
+// Value is empirical, not a guess: a real live run (4 questions, all genuinely contested — the
+// "AI agent infra" trace, 2026-07-17) spent retrieval $0.067 + digest $0.027 + deliberation $0.234
+// = $0.328 across 4 questions in loop 0 ≈ $0.082/question for one full redebate (committee opening
+// + up to MAX_DEBATE_ROUNDS conversational rounds, all 4 roles). Rounded down slightly for margin.
+// Recalibrate from a fresh trace if per-question cost drifts (model swaps, role changes, MAX_DEBATE_ROUNDS).
+export const LOOP_COST_PER_QUESTION_USD = 0.08;
 
 // Output-token ceiling for the synthesis ANSWER call (the final deliverable). Left unset, the AI SDK
 // sends the model's 128k default max_tokens; a non-streaming request at that ceiling is the classic
@@ -155,10 +165,11 @@ export const MAX_AGENT_STEPS       = 8;
 // sharper, gap-informed query. Code-enforced in webSearch (the prompt is only a hint). Default 1.
 export const MAX_SEARCHES_PER_PASS = 1;
 // Loop-0 recon floor: minimum sources an agent must gather before it may finish on the first
-// (reconnaissance) pass. Mirrors the coded RECON_RESULTS_PER_QUESTION grounding floor — thin
-// evidence mis-calibrates round-0 claims. Code-enforced (re-drive the agent), never a deadlock:
-// the agent still stops on maxSteps / pool exhaustion / no-tool-call regardless (see §11).
-export const RECON_FLOOR           = 3;
+// (reconnaissance) pass. Mirrors the coded RECON_RESULTS_PER_QUESTION grounding floor (4) — thin
+// evidence mis-calibrates round-0 claims — so on loop 0 the floor equals the ceiling and the agent
+// gathers a full 4. Code-enforced (re-drive the agent), never a deadlock: the agent still stops on
+// maxSteps / pool exhaustion / no-tool-call regardless (see §11).
+export const RECON_FLOOR           = 4;
 // The working-memo head the agent sees per readSource result (title + first N chars). The FULL
 // page is still stored as Evidence for the committee — this only bounds the agent's context.
 export const READSOURCE_HEAD_CHARS = 600;

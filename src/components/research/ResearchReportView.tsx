@@ -43,9 +43,11 @@ interface Props {
   report: ResearchReport;
   scan: ResearchUIState;
   onReset: () => void;
+  /** Label for the bottom action button — "Research another topic" live, "Close" in replay. */
+  resetLabel?: string;
 }
 
-export function ResearchReportView({ report, scan, onReset }: Props) {
+export function ResearchReportView({ report, scan, onReset, resetLabel = "Research another topic" }: Props) {
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6 pb-20">
       {/* Hero */}
@@ -198,7 +200,7 @@ export function ResearchReportView({ report, scan, onReset }: Props) {
           className="rounded-lg border border-line bg-panel px-5 py-2 font-mono text-sm text-mute
                      transition hover:border-accent hover:text-accent"
         >
-          Research another topic
+          {resetLabel}
         </button>
       </div>
     </div>

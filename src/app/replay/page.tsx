@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import type { ResearchEvent } from "@/lib/research-events";
 import type { RunSummary } from "@/lib/runs";
+import type { ResearchReport } from "@/lib/orchestration/graph";
 import { useResearchReplay } from "@/lib/useResearchReplay";
 import { QuestionBoard } from "@/components/research/QuestionBoard";
+import { ResearchReportView } from "@/components/research/ResearchReportView";
 
 const SPEEDS = [0.5, 1, 2, 4, 8];
 const DEMO_RUN_ID = "fixture";
@@ -40,9 +42,12 @@ export default function ReplayPage() {
       .catch(() => setRuns([]));
   }, []);
 
+  const [showReportModal, setShowReportModal] = useState(false);
+
   const loadRun = useCallback((id: string) => {
     setEvents(null);
     setLoadError(null);
+    setShowReportModal(false);
     const qs = id === DEMO_RUN_ID ? "" : `?id=${encodeURIComponent(id)}`;
     fetch(`/api/research/replay${qs}`)
       .then(async (res) => {
@@ -64,6 +69,22 @@ export default function ReplayPage() {
   }, [selectedId, loadRun]);
 
   const replay = useResearchReplay(events ?? EMPTY_EVENTS);
+  const replayReport = replay.state.report;
+
+  // Auto-open the report the moment playback reaches recommend:done — mirrors the live page's
+  // "pops up the instant it finishes" behavior. A ref keyed on the report object (stable per
+  // event, so scrubbing back and forward across the same recommend:done event is a no-op) means
+  // a user who closes the popup isn't fought back into it by unrelated re-renders.
+  const autoOpenedFor = useRef<typeof replayReport>(null);
+  useEffect(() => {
+    if (replayReport && replayReport !== autoOpenedFor.current) {
+      autoOpenedFor.current = replayReport;
+      setShowReportModal(true);
+    } else if (!replayReport) {
+      autoOpenedFor.current = null;
+      setShowReportModal(false);
+    }
+  }, [replayReport]);
 
   // A single fixed-height row regardless of how many runs exist — horizontally scrollable, never
   // wrapping to more lines. Without this, a long saved-run list ate the vertical space the board's
@@ -133,6 +154,14 @@ export default function ReplayPage() {
           </option>
         ))}
       </select>
+      {replayReport && !showReportModal && (
+        <button
+          onClick={() => setShowReportModal(true)}
+          className="rounded border border-line px-3 py-1 text-fg transition hover:border-accent hover:text-accent"
+        >
+          view report
+        </button>
+      )}
     </div>
   );
 
@@ -155,12 +184,37 @@ export default function ReplayPage() {
   }
 
   return (
-    <QuestionBoard
-      state={replay.state}
-      done={!replay.state.running}
-      topBar={picker}
-      headerExtra={playbackControls}
-      live={false}
-    />
+    <>
+      <QuestionBoard
+        state={replay.state}
+        done={!replay.state.running}
+        topBar={picker}
+        headerExtra={playbackControls}
+        live={false}
+      />
+      {showReportModal && replayReport && (
+        <div
+          className="fixed inset-0 z-40 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm"
+          onClick={() => setShowReportModal(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-6xl animate-rise overflow-y-auto rounded-xl border border-line bg-panel p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="mb-2 flex justify-end">
+              <button onClick={() => setShowReportModal(false)} className="text-xs text-mute hover:text-fg">
+                close ✕
+              </button>
+            </div>
+            <ResearchReportView
+              report={replayReport as ResearchReport}
+              scan={replay.state}
+              onReset={() => setShowReportModal(false)}
+              resetLabel="Close"
+            />
+          </div>
+        </div>
+      )}
+    </>
   );
 }

@@ -1,8 +1,21 @@
 # Project Guide
 
-Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl app ("Blindspot"). A manager decomposes a topic into questions; for each question a committee of four role-agents (Historian, Operator on gpt-5.4-mini; Investor on Claude Sonnet 5; Skeptic on Gemini 3.1 Flash-Lite — see `src/lib/roles.ts`) holds a **real debate** over a frozen evidence snapshot (Wave 3): round 0 is the independent **blind** opening (each role renders one claim — a `conclusion`, a calibrated `confidence`, and a categorical `stance` — without seeing the others, so cross-role agreement is real signal), then — **only when the openings show genuine disagreement** (≥2 distinct decisive stances, or an evidence id-clash) — the roles read the full transcript and the challenges aimed at them and revise across conversational rounds, conceding only to evidence, until positions stop moving. The committee debates to RESOLVE disagreement; **agreement is a trigger to ACT, not a dead end.** A gate then routes each question on its committee stance: a unanimous decisive lean is a settled answer; a `contested` split routes by contention (interpretive → resolve + report the fault line, evidential/named-gap → more retrieval); an `insufficient` verdict with a named gap goes back to retrieval (go get it), and if that gap survives one no-progress loop it's noted as a limitation, not chased forever. Orchestration is LangGraph.js. Two arms (baseline single-prompt vs orchestrated graph) run side-by-side.
+Adaptive multi-agent research system on top of a Next.js/TypeScript app ("Blindspot"). A manager
+decomposes a topic into questions; a four-role committee (Historian, Operator on gpt-5.4-mini;
+Investor on Claude Sonnet 5; Skeptic on Gemini 3.1 Flash-Lite — see `src/lib/roles.ts`) debates
+each one over a frozen evidence snapshot: a blind round-0 opening (each role states a
+`conclusion`, a calibrated `confidence`, and a categorical `stance`, without seeing the others),
+then — only when the openings show genuine disagreement (≥2 decisive stances, or an evidence-id
+clash) — conversational rounds where roles read the full transcript and revise, conceding only to
+evidence, until positions stop moving. **Agreement is a trigger to act, not a dead end.** A gate
+then routes each question on its committee stance: a unanimous lean is a settled answer; a
+`contested` split routes by contention (interpretive → resolve + report the fault line,
+evidential/named-gap → more retrieval); an `insufficient` verdict with a named gap goes back to
+retrieval once, then is noted as a limitation rather than chased forever. Orchestration is
+LangGraph.js. Two arms (baseline single-prompt vs. orchestrated graph) run side by side.
 
-**Current status, changelog, and open issues live in [STATUS.md](STATUS.md).** This file holds stable reference only.
+Full motivation and architecture walkthrough: [README.md](README.md). Changelog and open issues:
+[STATUS.md](STATUS.md). This file holds stable reference only.
 
 ## Key files
 
@@ -14,8 +27,8 @@ Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl ap
 | `src/lib/roles.ts` | THE role catalog — name, system prompt (persona), and model + redebateModel per committee role, in one place |
 | `src/lib/pricing.ts` | THE pricing catalog — `MODEL_CATALOG` (provider + $/1M input/output per LLM model id) AND `SEARCH_PROVIDER_PRICING` (credits/search + credits/scrape per search/scrape provider). eval.ts's cost estimator and the frontend cost display read MODEL_CATALOG from here; evidence/firecrawl.ts + evidence/exa.ts read their credit rate from here |
 | `src/lib/models/provider.ts` | Resolves a role/model id to its SDK model instance purely off pricing.ts's `provider` field; modelForRole()/modelForDebateRound() read roles.ts; managerModel/gateModel/gateClassifierModel/digestModel/researcherModel (the non-committee-role models) read their ids from params.ts, never a literal string here |
-| `src/lib/evidence/provider.ts` | THE search/scrape seam — explore()/search()/webSearchRaw()/scrapeOneCached(), the ONE provider-agnostic pipeline (dedupe/triage/cache/scrape worker pool) composed over whichever `SearchOps`/`ScrapeOps` evidence/config.ts's `SEARCH_PROVIDER`/`SCRAPE_PROVIDER` select — independently configurable operations. Call sites import from here, never from a specific vendor's file |
-| `src/lib/evidence/config.ts` | Search/scrape tunables (intents, scrape depth, triage, provider concurrency) + the independent `SEARCH_PROVIDER`/`SCRAPE_PROVIDER` selectors (default: Exa search, Firecrawl scrape) |
+| `src/lib/evidence/provider.ts` | THE search/scrape seam — the one provider-agnostic pipeline (dedupe/triage/cache/scrape pool) composed over whichever `SearchOps`/`ScrapeOps` `evidence/config.ts` selects. Call sites import from here, never a specific vendor's file |
+| `src/lib/evidence/config.ts` | Search/scrape tunables + the independent `SEARCH_PROVIDER`/`SCRAPE_PROVIDER` selectors (default: Exa search, Firecrawl scrape) |
 | `src/lib/evidence/firecrawl.ts` | The Firecrawl SearchOps/ScrapeOps implementation — `rawSearch`/`scrapeUrl`, the bare provider-specific network calls only |
 | `src/lib/evidence/exa.ts` | The Exa SearchOps/ScrapeOps implementation — `rawSearch`/`scrapeUrl`, mirroring firecrawl.ts |
 | `src/lib/evidence/candidates.ts` | Pure, provider-agnostic candidate selection (dedupeCandidates/capCandidatesPerQuery/selectCandidatesByScore) shared by evidence/provider.ts's pipelines |
@@ -30,7 +43,7 @@ Adaptive multi-agent research system on top of a Next.js/TypeScript Firecrawl ap
 | `src/lib/orchestration/eval.ts` | ArmResult types + runBaseline() + toAnnotatedUsage() (cache-aware cost) + rollupTokens() |
 | `src/lib/orchestration/mechanics.ts` | computeRunMechanics() + formatMechanicsReport() — per-run RUN MECHANICS report (retrieval, deliberation debated-vs-skipped + productive, cache-aware effort split, convergence) |
 | `src/lib/supabase.ts` | Supabase client backing the search/scrape/blocklist caches (`blindspot` schema; see `supabase/schema.sql`) |
-| `src/lib/params.ts` | Orchestration/gate-policy tunables (`TOTAL_RETRIEVAL_BUDGET` — ONE combined search+scrape credit cap, incl. per-loop reservation + $ cap `MAX_RUN_COST_USD`, thresholds, loop limits, digest, prompt-cache, debate rounds, movement epsilon, `STRUCTURED_OUTPUT_MAX_TOKENS`/`SYNTHESIS_ANSWER_MAX_TOKENS` output-token ceilings). Also THE non-committee model-id catalog (`MANAGER_MODEL_ID`, `ANSWER_MODEL_ID`, `GATE_CLASSIFIER_MODEL_ID`, `DIGEST_MODEL_ID`, `RESEARCHER_MODEL_ID`) — models/provider.ts reads these, never a literal string. Search/scrape MECHANICS tunables live in evidence/config.ts; the four COMMITTEE roles' model config lives in roles.ts + pricing.ts |
+| `src/lib/params.ts` | Orchestration/gate-policy tunables — retrieval + $ budgets, loop limits, digest, prompt-cache, debate rounds, movement epsilons, output-token ceilings. Also THE non-committee model-id catalog (`MANAGER_MODEL_ID`, `ANSWER_MODEL_ID`, `GATE_CLASSIFIER_MODEL_ID`, `DIGEST_MODEL_ID`, `RESEARCHER_MODEL_ID`). Search/scrape mechanics live in `evidence/config.ts`; committee-role model config lives in `roles.ts` + `pricing.ts` |
 | `src/lib/prompts.ts` | Home for non-role-persona LLM prompt WORDING (CONFIDENCE_CALIBRATION, intake/decompose/digest/committee/debate/gate/answer builders). Nodes keep state-shaping; wording lives here. Role personas live in roles.ts |
 | `scripts/compare-arms.ts` | A/B comparison harness (accepts --budget, --usd-budget) |
 | `src/lib/research-events.ts` | ResearchEvent union (SSE wire protocol for orchestration), incl. `debate:opening`/`debate:round` (blind opening + conversational rounds) and the terminal `research:mechanics` |

@@ -2,16 +2,13 @@
 
 > Attention is all you need. But what evidence is worth your attention?
 
-Ask an LLM "is there a business here?" and you get a fluent, generic, unfalsifiable answer — no
+Ask an LLM "is there a business here?" and you get a clean, generic, unfalsifiable answer with no
 sourcing, no acknowledgment of what it doesn't know, and no mechanism to disagree with itself.
 Blindspot answers the same question with **empirical, cited, and adversarially-tested** evidence
-instead: it goes and reads real sources, runs a committee that actually argues about what they
-mean, spends a hard-capped budget only where more evidence could change the answer, and hands
-back a verdict you can trace claim-by-claim back to a URL — including an honest account of what
-the evidence couldn't settle.
-
-Type an industry or topic, get a report with a scored thesis, cited claims, and a named list of
-what's still unknown.
+instead: it finds and reads real sources, runs a committee that argues about what they
+mean, and spends a hard-capped budget only where more evidence could change the answer. Input an industry,
+idea, or full investment thesis; get back a verdict you can trace claim-by-claim back to a URL plus 
+an honest account of what remains unsettled.
 
 ---
 
@@ -20,28 +17,26 @@ what's still unknown.
 ### A single LLM call can't tell you what it doesn't know
 
 A transformer's whole computation is "which tokens deserve attention, given what I've already
-seen." That's a good model of reading — it's a bad model of *research*. A single-shot answer has
-no mechanism to go check a fact, no way to flag "I'm guessing here," and every token it emits is
-optimized to sound plausible, not to be falsifiable. You cannot audit a paragraph of confident
-prose against the sources it didn't cite, because it didn't cite any.
+seen." That's great for quick comprehension, not so much for getting the full, messy picture. 
+A single-shot answer has no mechanism to go check a fact, buries uncertainty instead of surfacing it,
+and every output token is optimized for plausibility. Put simply, you can't audit a paragraph of confident
+prose against the sources it didn't cite.
 
 Blindspot inverts the question. Instead of asking a model to *recall* an answer, it asks: **out
-of everything findable on the open web, what specific evidence is worth reading, and what does
-it actually establish?** That's a retrieval-and-attention allocation problem, not a knowledge
-problem — and it's one you can build real guarantees around: budgets, citations, adversarial
-checks, and a record of exactly what was read and why.
+of everything findable on the open web, what specific evidence is worth our time, and what does
+it actually establish?** The problem isn't source breadth (that's virtually infinite); it's retrieval,
+allocation, and adaptability. Fortunately, we can build real guarantees: budgets, citations, adversarial
+checks, and a record of both what was read and why.
 
 ### Assessing a market is a search problem, not a lookup
 
-"Is there a business in freight-brokerage vendor management?" isn't answered by one fact — it
-depends on precedent (has this been tried, how did it die), operational reality (what actually
-breaks day to day), market structure (is there a fundable business here), and the strongest
+"Is there business opportunity in freight-brokerage vendor management?" isn't answered by any one 
+number or article. It depends on precedent (has this been tried, how did it die), operational reality 
+(what actually breaks day to day), market structure (is there a fundable venture here), and the strongest
 reason it fails. Each of those lives in different corners of the web, phrased differently, and
-most search queries you'd try come back with marketing copy, adjacent-but-wrong results, or
-nothing useful at all. A broad market scan is inherently a **high-fan-out, mostly-fruitless
-search problem**: you need to cast a wide net across many angles, expect most of it to miss, and
-know which of the hits actually deserve to be read closely, remembered, and argued over before
-you can synthesize an answer. Blindspot is built around that reality rather than pretending one
+among many competing signals. A broad market scan therefore requires casting a wide net across many angles, expecting most of it to miss, and
+understanding what should be studied, remembered, and argued over before
+synthesizing an answer. Blindspot is built around that reality rather than pretending one
 or two queries will do — retrieval, triage, and budget allocation are first-class system
 components, not an afterthought bolted onto an LLM call.
 
@@ -50,10 +45,9 @@ components, not an afterthought bolted onto an LLM call.
 A panel that's told to agree will agree — and that agreement is worthless, because you can't
 tell if it's real consensus or four models converging on the same plausible-sounding guess.
 Blindspot's committee forms opinions **blind**, independently, before anyone sees anyone else's
-view, so cross-role agreement is a genuine signal and disagreement is preserved and reported
-rather than smoothed away. When the committee can't agree because two readings of the evidence
-are both defensible, the report says so — "here's the fault line, and here's why more searching
-can't resolve it" is a more honest and more useful answer than a forced consensus.
+view. This way, cross-role agreement is a genuine signal and disagreement is investigated
+rather than smoothed away. From here, roles actively debate with each other and fetch new evidence as necessary to resolve remaining disagreements (and when the committee can't agree because two readings of the evidence
+are both defensible, the report says so too). Blindspot was designed with the philosophy that surfacing such disagreement is far more useful to a reader than forcing consensus at the expense of real-world nuance.
 
 ---
 
@@ -73,30 +67,17 @@ its skepticism isn't contaminated by peer pressure:
 | **Skeptic** | Disconfirmation — actively hunts for the strongest reason this fails | Gemini 3.1 Flash-Lite |
 
 **Blind openings.** Round 0 shows every role the *same* evidence but not each other's answers.
-Each states a claim: a conclusion, a calibrated confidence, and a categorical **stance**
-(`supports` / `opposes` / `insufficient`). This isn't just procedural fairness — an earlier
-version let roles see the discussion as they wrote, and one role learned to claim "no evidence
-was given" even when it had cited that same evidence moments earlier, an artifact of herding
-toward what it expected to be asked. Blind openings make cross-role agreement real signal instead
-of an echo, and give the debate an honest starting position to argue from.
+Working off the overarching research question, each states a claim: a conclusion, a calibrated confidence, 
+and a categorical **stance** (`supports` / `opposes` / `insufficient`).
 
 **Debate only when it's genuine.** Conversational rounds run *only* when the openings show real
 disagreement — at least two conflicting stances, or two roles citing the same source to opposite
-conclusions. A unanimous opening skips straight to the gate at zero extra cost; polling four
-models that already agree and then paying for a multi-round debate to restate the agreement is
-pure waste, and early traces showed exactly that pattern before this check existed. When rounds
+conclusions. A unanimous opening skips straight to the gate at zero extra cost, as further discussing agreement eats tokens that have far better marginal utility elsewhere. When rounds
 do run, each role sees the full transcript and the challenges aimed at it, and may rebut,
 concede, or extend — **conceding only when a cited source forces it, never to consensus**. Every
 role is explicitly instructed that agreement is not evidence. The debate stops the instant a
 round moves no position (confidence shift below `DEBATE_CONFIDENCE_EPSILON = 0.05` and no new
-cited-id changes count as no movement) or hits the `MAX_DEBATE_ROUNDS = 2` cap.
-
-**Nothing is a self-reported score.** Whether the committee genuinely disagrees, whether a role
-moved, and whether a surviving disagreement is resolvable by more evidence are all computed
-mechanically from the committee's own structured output — stances, cited-source-id sets,
-confidence deltas — in `src/lib/orchestration/debate.ts`, a pure, unit-tested module with no LLM
-calls of its own. The system never asks a model to grade its own certainty on a made-up 0–1 scale
-and then does math on the result.
+cited-id changes count as no movement) or hits the `MAX_DEBATE_ROUNDS = 2` cap. These parameters are empirically tuned to balance empirical rigor with maximizing per-token utility.
 
 ### Preserve disagreement; retrieve only where it pays
 
@@ -122,7 +103,7 @@ remaining ambiguous questions on computed signals — named-gap count, confidenc
 vibe-check. If it asks for more retrieval than the remaining budget allows, the system clamps to
 the highest-value questions by gap count rather than either overspending or picking arbitrarily.
 
-### Agent orchestration — a graph, not a chat loop
+### Agent orchestration
 
 Orchestration is a [LangGraph.js](https://langchain-ai.github.io/langgraphjs/) `StateGraph`, not
 an open-ended agent loop:
@@ -131,23 +112,18 @@ an open-ended agent loop:
 topic
    │
    ▼ DECOMPOSE     manager breaks the topic into 3–4 concrete research questions + a search query each
-   ▼ RETRIEVE       search + scrape for each open question (coded pipeline, or an agentic researcher swarm)
+   ▼ RETRIEVE       search + scrape for each open question (agentic researcher swarm)
    ▼ DIGEST         compress each fresh source into a short evidence item before the committee reads it
-   ▼ DEBATE         blind opening → conversational rounds only on genuine disagreement
+   ▼ DEBATE         blind opening → conversational rounds only on disagreement OR insufficient evidence
    ▼ GATE           route each question: settle / report fault line / retrieve the named gap
    ├─(gap named, budget left)─► back to RETRIEVE
    ▼ ANSWER         cited, per-question report — exempt from the cost cap so it always completes
 ```
 
-State moves through the graph via **reducers**, not last-write-wins assignment. Budget is
+State moves through the graph via reducers. Budget is
 tracked as `budgetRemaining`/`budgetSpent`, and every node that touches it returns a *signed
-delta* that an additive reducer accumulates — never an absolute value. That makes budget updates
-order-independent: two nodes writing budget in the same LangGraph super-step can't silently
-clobber each other the way a replace-style reducer would (`retrieve` is the sole writer; `gate`
-writes none). Debate transcripts use a replace-per-question reducer instead, since a fresh loop's
-transcript should fully supersede the last one for that question, not merge with it. Every graph
-run also checkpoints its full state history (LangGraph `MemorySaver`), so a run is inspectable
-step by step, not just at the end.
+delta* that an additive reducer accumulates (preventing clobbering). Debate transcripts use a replace-per-question reducer instead, and every graph
+run also checkpoints its full state history (LangGraph `MemorySaver`) so runs are fully inspectable
 
 The graph loops back to `RETRIEVE` only when the gate found a named gap *and* budget remains —
 capped independently by a hard iteration ceiling, a zero-new-evidence kill switch (a pass that
@@ -156,20 +132,15 @@ identical argument), and the cost cap below.
 
 ### Budget is a hard constraint, enforced in code
 
-Every run is capped on two independent axes, checked before every spend — not by asking an LLM
-to behave:
+Every run is capped on two independent axes, checked before every spend:
 
-- **Retrieval credits** (`TOTAL_RETRIEVAL_BUDGET = 80`) — one combined search+scrape credit pool.
+- **Retrieval credits** (`TOTAL_RETRIEVAL_BUDGET = ...`) — one combined search+scrape credit pool.
   No single retrieval pass may spend more than half of it (`MAX_LOOP_SPEND_FRACTION = 0.5`), so
-  an early broad pass can't drain the pool before the gap-targeted passes — the actual point of
-  the outer loop — ever get to run.
-- **LLM spend** (`MAX_RUN_COST_USD = 0.75`) — a real-time USD ceiling checked before every gated
-  call via an `AsyncLocalStorage`-scoped cost tracker (so concurrent runs never clobber each
-  other's spend). Before starting a fresh retrieve+debate cycle, the gate also checks it can
+  an early broad pass can't drain the pool before the gap-targeted passes ever get to run.
+- **LLM spend** (`MAX_RUN_COST_USD = ...`) — a real-time USD ceiling checked before every gated
+  call via an `AsyncLocalStorage`-scoped cost tracker. Before starting a fresh retrieve+debate cycle, the gate also checks it can
   *finish* the cycle it's about to start (`LOOP_COST_PER_QUESTION_USD × unresolved-question-count`
-  of headroom required) — because a cap hit mid-debate makes LangGraph roll the whole super-step
-  back, discarding freshly-gathered evidence and committing nothing. Converging cleanly one loop
-  early beats starting a cycle that orphans its own work. If the cap is still hit, the run
+  of headroom required), as a mid-debate cap hit renders the whole round effectively useless. If the cap is still hit, the run
   degrades gracefully: it synthesizes a partial report from whatever the committee had already
   settled. The final answer call itself is **exempt** from the cap — the deliverable always
   completes, even on a run that otherwise blew its budget.
